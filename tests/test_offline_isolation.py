@@ -383,6 +383,7 @@ def test_real_model_flow_is_offline_and_writes_only_under_data_and_models(
                     + "; ".join(str(f) for f in check.failures))
 
     root = tmp_path / "ws"
+    root.mkdir()  # the project root exists in real use; only data/ and models/ are audited
     cfg = Config(root=root, models_dir=models)
     with WriteAudit() as audit:
         res = run_flow(root, models, SyntheticSpec())

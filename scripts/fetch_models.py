@@ -112,6 +112,7 @@ def default_downloader(rel: str, models_dir: Path) -> Path:
     with _network_enabled():
         if rel == CLIP_REL:
             import huggingface_hub  # Model_Fetcher only
+            import huggingface_hub.constants  # lazy submodule: must be imported explicitly
 
             # Constants may have been read with HF_HUB_OFFLINE=1 at first import.
             huggingface_hub.constants.HF_HUB_OFFLINE = False

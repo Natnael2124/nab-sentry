@@ -84,3 +84,8 @@ ultralytics-thop==2.2.2
 urllib3==2.8.0
 uvicorn==0.54.0
 wcwidth==0.9.1
+
+# Installed by Ultralytics during the YOLO11n ONNX export in scripts/fetch_models.py.
+onnx==1.23.1
+onnxslim==0.1.97
+ml_dtypes==0.6.0
