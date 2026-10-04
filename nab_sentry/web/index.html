@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; media-src 'self'; img-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NAB Sentry</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script type="module" src="/static/app.js"></script>
+  <!--
+    Element contract for /static/app.js (task 16.2). No inline scripts or styles: the CSP
+    above blocks them, so all behaviour lives in app.js and all CSS in styles.css.
+
+    Search form
+      #search-form   <form role="search">; submit (button or Enter in #q) triggers a search
+      #q             query input, maxlength=256, aria-describedby="q-error"
+      #q-error       validation message next to #q (role=status); empty when valid
+      #camera        <select>; first option value="" = "All cameras"; app.js appends cameras
+      #camera-error  status message shown when GET /api/cameras fails
+      #start, #end   <input type="datetime-local">, empty by default
+      #cls           <select>; value="" = "All classes" + the six Target_Classes
+      #search-btn    submit button; disable while a request is in flight
+    Status / results
+      #status        role=status aria-live=polite: loading, "No matching incidents found", errors
+      #results       <ol>; app.js renders one <li><button class="card"> per Event:
+                       <img class="card-thumb" alt="{camera label}, {start}">
+                       <span class="card-camera">, <span class="card-time">, <span class="card-score">
+                     mark the active card with aria-current="true" (styled via .card[aria-current="true"])
+    Player
+      #player        player panel <section>
+      #video         <video controls preload="metadata">
+      #timeline      timeline track (position: relative)
+      #timeline-span highlighted event span; set CSS custom properties via
+                     el.style.setProperty("--span-left", "12.5%") / ("--span-width", "4%")
+                     (CSSOM writes are allowed by CSP); toggle the `hidden` attribute
+      #replay, #prev, #next  native buttons, disabled until an Event is loaded
+      #player-error  role=status message for video load failures
+  -->
+</head>
+<body>
+  <header class="site-header">
+    <h1>NAB Sentry</h1>
+  </header>
+
+  <main>
+    <form id="search-form" role="search" aria-label="Search incidents" novalidate>
+      <div class="field field-q">
+        <label for="q">Search footage</label>
+        <input id="q" name="q" type="text" maxlength="256" autocomplete="off"
+               placeholder="e.g. person in blue jacket entering reception"
+               aria-describedby="q-error">
+        <p id="q-error" class="field-error" role="status" aria-live="polite"></p>
+      </div>
+
+      <div class="field">
+        <label for="camera">Camera</label>
+        <select id="camera" name="camera">
+          <option value="" selected>All cameras</option>
+        </select>
+        <p id="camera-error" class="field-error" role="status" aria-live="polite"></p>
+      </div>
+
+      <div class="field">
+        <label for="start">Start</label>
+        <input id="start" name="start" type="datetime-local" step="1">
+      </div>
+
+      <div class="field">
+        <label for="end">End</label>
+        <input id="end" name="end" type="datetime-local" step="1">
+      </div>
+
+      <div class="field">
+        <label for="cls">Object class</label>
+        <select id="cls" name="cls">
+          <option value="" selected>All classes</option>
+          <option value="person">person</option>
+          <option value="car">car</option>
+          <option value="truck">truck</option>
+          <option value="bus">bus</option>
+          <option value="motorcycle">motorcycle</option>
+          <option value="bicycle">bicycle</option>
+        </select>
+      </div>
+
+      <div class="field field-submit">
+        <button id="search-btn" type="submit">Search</button>
+      </div>
+    </form>
+
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+
+    <div class="layout">
+      <section class="results-panel" aria-labelledby="results-heading">
+        <h2 id="results-heading">Results</h2>
+        <ol id="results" class="results"></ol>
+      </section>
+
+      <section id="player" class="player" aria-labelledby="player-heading">
+        <h2 id="player-heading">Player</h2>
+        <video id="video" controls preload="metadata"></video>
+        <div id="timeline" class="timeline" aria-hidden="true">
+          <span id="timeline-span" class="span" hidden></span>
+        </div>
+        <div class="player-controls">
+          <button id="prev" type="button" disabled>Previous</button>
+          <button id="replay" type="button" disabled>Replay</button>
+          <button id="next" type="button" disabled>Next</button>
+        </div>
+        <p id="player-error" class="player-error" role="status" aria-live="polite"></p>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

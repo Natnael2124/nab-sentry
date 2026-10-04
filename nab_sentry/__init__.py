@@ -1,7 +1,12 @@
 """NAB Sentry: offline, CPU-only natural-language search over surveillance footage.
 
-Keep this module free of heavy imports. Task 2.3 adds a call to
-``startup.enable_offline_mode()`` here, which must run before any other import.
+The offline environment is set first, before any other import, so that no model
+library (torch, open_clip, huggingface_hub) can be imported with network access
+enabled (Requirement 13.3). Keep this module free of heavy imports.
 """
+
+from nab_sentry import startup as _startup  # stdlib-only module
+
+_startup.enable_offline_mode()
 
 __version__ = "0.1.0"

@@ -1,0 +1,104 @@
+# Evaluation queries for scripts/evaluate.py (Requirement 16).
+#
+# Rules (16.1): 15 to 20 entries; text is 1-200 characters; camera_id must exist in the
+# Metadata_Store; start/end are ISO 8601 date-times (no UTC offset = local time) and end must be
+# later than start. The window is the ground-truth time range in which the described thing is
+# visible on that camera. An Event counts as relevant when its camera matches and its padded
+# window overlaps [start, end] inclusively (16.2).
+#
+# The first two entries match the default synthetic video from scripts/make_synthetic.py
+# (camera CAM-SYN01, video start 2025-01-01T08:00:00, red square 10-25 s, blue circle 50-65 s).
+#
+# Integrator: replace every entry marked TODO with a real query on ingested footage. Set
+# camera_id to a real camera ID and start/end to the ground-truth times read from the footage.
+# Until filled in, the placeholders reference camera CAM01 and are reported as errors
+# ("camera ID ... is not in the Metadata_Store") without stopping the run (16.7).
+
+queries:
+  - text: "red square"
+    camera_id: CAM-SYN01
+    start: "2025-01-01T08:00:10"
+    end:   "2025-01-01T08:00:25"
+
+  - text: "blue circle"
+    camera_id: CAM-SYN01
+    start: "2025-01-01T08:00:50"
+    end:   "2025-01-01T08:01:05"
+
+  # TODO Integrator: real camera ID and ground-truth times.
+  - text: "person in blue jacket entering reception"
+    camera_id: CAM01
+    start: "2025-01-01T08:01:50"
+    end:   "2025-01-01T08:02:30"
+
+  # TODO Integrator: real camera ID and ground-truth times.
+  - text: "white van parked at the loading dock"
+    camera_id: CAM01
+    start: "2025-01-01T09:00:00"
+    end:   "2025-01-01T09:01:00"
+
+  # TODO Integrator: real camera ID and ground-truth times.
+  - text: "person carrying a cardboard box"
+    camera_id: CAM01
+    start: "2025-01-01T09:10:00"
+    end:   "2025-01-01T09:10:40"
+
+  # TODO Integrator: real camera ID and ground-truth times.
+  - text: "red car driving through the gate"
+    camera_id: CAM01
+    start: "2025-01-01T09:20:00"
+    end:   "2025-01-01T09:20:30"
+
+  # TODO Integrator: real camera ID and ground-truth times.
+  - text: "person in high visibility vest"
+    camera_id: CAM01
+    start: "2025-01-01T09:30:00"
+    end:   "2025-01-01T09:31:00"
+
+  # TODO Integrator: real camera ID and ground-truth times.
+  - text: "bicycle leaning against the wall"
+    camera_id: CAM01
+    start: "2025-01-01T09:40:00"
+    end:   "2025-01-01T09:42:00"
+
+  # TODO Integrator: real camera ID and ground-truth times.
+  - text: "two people talking near the door"
+    camera_id: CAM01
+    start: "2025-01-01T09:50:00"
+    end:   "2025-01-01T09:51:00"
+
+  # TODO Integrator: real camera ID and ground-truth times.
+  - text: "forklift moving pallets"
+    camera_id: CAM01
+    start: "2025-01-01T10:00:00"
+    end:   "2025-01-01T10:01:30"
+
+  # TODO Integrator: real camera ID and ground-truth times.
+  - text: "person with a backpack walking past"
+    camera_id: CAM01
+    start: "2025-01-01T10:10:00"
+    end:   "2025-01-01T10:10:30"
+
+  # TODO Integrator: real camera ID and ground-truth times.
+  - text: "delivery truck at the entrance"
+    camera_id: CAM01
+    start: "2025-01-01T10:20:00"
+    end:   "2025-01-01T10:22:00"
+
+  # TODO Integrator: real camera ID and ground-truth times.
+  - text: "person sitting on a bench"
+    camera_id: CAM01
+    start: "2025-01-01T10:30:00"
+    end:   "2025-01-01T10:32:00"
+
+  # TODO Integrator: real camera ID and ground-truth times.
+  - text: "dog on a leash"
+    camera_id: CAM01
+    start: "2025-01-01T10:40:00"
+    end:   "2025-01-01T10:40:45"
+
+  # TODO Integrator: real camera ID and ground-truth times.
+  - text: "black SUV leaving the car park"
+    camera_id: CAM01
+    start: "2025-01-01T10:50:00"
+    end:   "2025-01-01T10:50:30"

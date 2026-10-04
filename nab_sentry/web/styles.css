@@ -1,0 +1,205 @@
+/* NAB Sentry console. System fonts only, no external assets (Req 12.1, 13.10). */
+
+:root {
+  --fg: #1f1f1f;
+  --muted: #4a4a4a;
+  --bg: #ffffff;
+  --panel: #f4f5f7;
+  --border: #8a8f98;
+  --accent: #1558b0;      /* white text on this is ~6.6:1 */
+  --accent-soft: #e3edfb;
+  --error: #b00020;
+  --span: rgba(21, 88, 176, 0.55);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  color: var(--fg);
+  background: var(--bg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.site-header {
+  padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.site-header h1 { margin: 0; font-size: 1.4rem; }
+
+main { padding: 1rem 1.5rem; }
+
+h2 { font-size: 1.1rem; margin: 0 0 0.5rem; }
+
+/* ---- Search form ---------------------------------------------------------------------- */
+
+#search-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
+  align-items: flex-start;
+}
+
+.field { display: flex; flex-direction: column; gap: 0.25rem; }
+.field-q { flex: 1 1 22rem; }
+.field-submit { align-self: flex-start; padding-top: 1.65rem; }
+
+label { font-weight: 600; }
+
+input, select, button {
+  font: inherit;
+  color: var(--fg);
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+button {
+  cursor: pointer;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+button:hover:not(:disabled) { background: #0f4590; }
+
+button:disabled {
+  cursor: not-allowed;
+  background: #d5d8dd;
+  border-color: #b5b9c0;
+  color: #4a4a4a;
+}
+
+.field-error {
+  margin: 0;
+  min-height: 1.2em;
+  color: var(--error);
+  font-size: 0.9rem;
+}
+
+/* ---- Focus (Req 12.11: outline >= 2 px) ----------------------------------------------- */
+
+:focus-visible { outline: 3px solid #1a73e8; outline-offset: 2px; }
+
+/* ---- Status --------------------------------------------------------------------------- */
+
+.status {
+  margin: 0.75rem 0;
+  min-height: 1.4em;
+  color: var(--muted);
+}
+
+.status.error { color: var(--error); }
+
+/* ---- Layout --------------------------------------------------------------------------- */
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(18rem, 1fr) minmax(20rem, 1.4fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+}
+
+/* ---- Results -------------------------------------------------------------------------- */
+
+.results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.card {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 128px 1fr;
+  grid-template-rows: auto auto auto;
+  column-gap: 0.75rem;
+  text-align: left;
+  padding: 0.5rem;
+  background: var(--panel);
+  color: var(--fg);
+  border: 2px solid transparent;
+  border-radius: 6px;
+  font-weight: 400;
+}
+
+.card:hover:not(:disabled) { background: #e8eaee; border-color: var(--border); }
+
+.card-thumb {
+  grid-row: 1 / span 3;
+  width: 128px;
+  height: 72px;
+  object-fit: cover;
+  background: #cfd3d9;
+  border-radius: 3px;
+}
+
+.card-camera { font-weight: 600; }
+.card-time { color: var(--muted); font-size: 0.9rem; }
+.card-score { color: var(--muted); font-size: 0.9rem; }
+
+/* Active card (Req 12.8): exactly one card carries aria-current="true". */
+.card[aria-current="true"],
+.card.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.card[aria-current="true"]:hover { background: var(--accent-soft); }
+
+/* ---- Player --------------------------------------------------------------------------- */
+
+.player video {
+  display: block;
+  width: 100%;
+  max-height: 60vh;
+  background: #000000;
+}
+
+.timeline {
+  position: relative;
+  height: 12px;
+  margin-top: 0.5rem;
+  background: #d5d8dd;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+/* app.js sets --span-left / --span-width (percentages) via CSSOM. */
+.timeline .span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--span-left, 0%);
+  width: var(--span-width, 0%);
+  min-width: 2px;
+  background: var(--span);
+  border-left: 2px solid var(--accent);
+  border-right: 2px solid var(--accent);
+}
+
+.timeline .span[hidden] { display: none; }
+
+.player-controls {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.player-error {
+  margin: 0.5rem 0 0;
+  min-height: 1.2em;
+  color: var(--error);
+}
