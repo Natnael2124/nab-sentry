@@ -1,0 +1,24 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1.1 Create package layout, pinned dependencies, and test harness": [
+      {
+        "executionId": "8bcb73b3-0652-4838-961a-39ac82eb53f9",
+        "chatSessionId": "sess_5da0d64a-c6b2-4d4b-a000-a28af3c3bbdb",
+        "timestamp": 1791098769931
+      },
+      {
+        "executionId": "8bcb73b3-0652-4838-961a-39ac82eb53f9",
+        "chatSessionId": "sess_5da0d64a-c6b2-4d4b-a000-a28af3c3bbdb",
+        "timestamp": 1791099699637
+      }
+    ],
+    "1. Set up project scaffold and dependencies": [
+      {
+        "executionId": "8bcb73b3-0652-4838-961a-39ac82eb53f9",
+        "chatSessionId": "sess_5da0d64a-c6b2-4d4b-a000-a28af3c3bbdb",
+        "timestamp": 1791099699970
+      }
+    ]
+  }
+}

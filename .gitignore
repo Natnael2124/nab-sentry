@@ -1,0 +1,16 @@
+venv/
+env/
+__pycache__/
+*.pyc
+data/
+*.db
+*.sqlite3
+thumbnails/
+.cache/
+*.bin
+*.safetensors
+*.pt
+*.onnx
+models/
+.pytest_cache/
+.hypothesis/
