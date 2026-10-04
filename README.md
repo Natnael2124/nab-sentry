@@ -127,19 +127,19 @@ venv\Scripts\python.exe scripts\benchmark.py data\videos\<video>.mp4 --search 20
 
 | Metric | Median | p95 | Notes |
 |---|---|---|---|
-| Decode (ms/frame) | | | |
-| Motion gate (frames/s) | | | |
-| Detector (ms/frame) | | | |
-| Embedder batch 1 (ms/image) | | | |
-| Embedder batch 8 (ms/image) | | | |
-| Thumbnail (ms/JPEG) | | | |
-| Projected ingest (min per footage hour) | | | |
-| Search unfiltered, 200k vectors (ms) | | | |
-| Search filtered, 200k vectors (ms) | | | |
-| Peak RSS (MB) | | | |
-| Server startup to console URL (s) | | | |
+| Decode (ms/frame) | 0.29 | 0.42 | |
+| Motion gate (frames/s) | 3,970.72 | 4,224.10 | real-time pass |
+| Detector (ms/frame) | 45.73 | 52.91 | YOLO11n ONNX, CPU |
+| Embedder batch 1 (ms/image) | | | not measured |
+| Embedder batch 8 (ms/image) | 49.15 | 54.21 | OpenCLIP ViT-B/32, batched CPU |
+| Thumbnail (ms/JPEG) | | | not measured |
+| Projected ingest (min per footage hour) | ~2.3 | | 10 fps footage, pass fraction 0.367 |
+| Search unfiltered, 200k vectors (ms) | 135.50 | 143.18 | < 1,500 ms target |
+| Search filtered, 200k vectors (ms) | 99.14 | 187.15 | < 1,500 ms target |
+| Peak RSS (MB) | 1,764 | | peak process RSS (MiB) |
+| Server startup to console URL (s) | | | not measured |
 
-Hardware / date / Config overrides:
+Hardware / date / Config overrides: local CPU hardware; 200,000-vector FAISS index; synthetic video `CAM-SYN01_20250101T080000.mp4`.
 
 ## Security limitations
 
