@@ -130,7 +130,9 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
     - _Requirements: 10.1, 10.2, 10.4_
   - [x] 10.2 Property tests: assignment invariant (9), linear-motion stability (10), expiry (11), snapshot/restore (12); plus drain-exactly-once and examples (low boxes continue but never start tracks, class separation, velocity bridging fast motion)
     - File: `tests/test_bytetrack.py`
-  - [ ] 10.3 Scene_Cut handling in the pipeline (`scene_cut_frac`) and per-camera live state carried across Segments with `segment_gap_reset_s`
+  - [x] 10.3 Scene_Cut handling in the pipeline (`scene_cut_frac`) and per-camera live state carried across Segments with `segment_gap_reset_s`
+    - Done 2026-10-18. `nab_sentry/track/live.py` `LiveTracks` (the pipeline's TrackSink) keeps one ByteTracker per camera; `begin_video` snapshots and decides carry-over (gap <= `segment_gap_reset_s`, overlap up to 2 s tolerated because names have 1 s resolution, times kept monotone); scene cut = grey-signature change >= `scene_cut_frac` vs the previous tracked frame, also across Segments; `end_video` (inside the transaction) drains records; `rollback_video` restores the snapshot. Config: `enable_tracking`, `track_match_iou`, `track_min_hits`, `track_buffer_s`, `scene_cut_frac`, `segment_gap_reset_s`; `ingest.py` attaches LiveTracks (batch and watch). Rollback of tracker state (Req 10.6) is done here, ahead of 11.3
+    - Property: videos that roll back leave no trace (== feeding only committed ones); pipeline failure at every checkpoint then retry == clean run. Real models, 40 s as one file vs four 10 s Segments: both 6 confirmed tracks and 5 scene cuts (matching the contact-sheet cuts); tracks continue across a Segment boundary
     - _Requirements: 10.4, 10.5_
 
 - [ ] 11. Schema v2 and track storage

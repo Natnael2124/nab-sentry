@@ -239,6 +239,13 @@ class ByteTracker:
         self._tracks = []
         return ended
 
+    def reset(self) -> list[int]:
+        """End every track and forget the clock (the next video may start at any time, also
+        earlier than the last one, e.g. out-of-order files). Keys keep counting up."""
+        ended = self.end_all()
+        self._now = None
+        return ended
+
     def drain(self) -> list[TrackRecord]:
         """New observations of confirmed tracks (back-filled from before confirmation) and of
         tracks that ended; each observation is returned exactly once."""

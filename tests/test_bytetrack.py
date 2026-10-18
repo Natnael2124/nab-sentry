@@ -19,7 +19,6 @@ from hypothesis import strategies as st
 
 from nab_sentry.ingest.detector import Detection
 from nab_sentry.ingest.sources import DecodedFrame
-from nab_sentry.track import TrackSink
 from nab_sentry.track.bytetrack import ByteTracker, iou
 
 DT = 1 / 3  # tracking rate 3 fps
@@ -226,9 +225,8 @@ def test_end_all_and_time_checks():
         tr.step(-1.0, [])
 
 
-def test_tracksink_update_uses_video_start():
+def test_update_uses_video_start():
     tr = ByteTracker(0.3, 1, 2.0)
-    assert isinstance(tr, TrackSink)
     img = np.zeros((4, 4, 3), np.uint8)
     tr.begin_video(1000.0)
     tr.update(DecodedFrame(0, 9.5, img), [det(0, 0, 40, 90)])

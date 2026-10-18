@@ -75,6 +75,12 @@ class Config:
     # tracking (V2)
     track_rate: float = 3.0  # 1..30; detector + tracker fps while active; the effective
     # rate is max(track_rate, sample_rate) (see effective_track_rate), so V1 configs stay valid
+    enable_tracking: bool = True  # ByteTrack-style tracker during ingest (needs the detector)
+    track_match_iou: float = 0.3  # 0.05..0.95, IoU to match a detection to a predicted box
+    track_min_hits: int = 3  # 1..30, matches before a track is confirmed
+    track_buffer_s: float = 2.0  # 0.2..30, a confirmed track ends after this long unmatched
+    scene_cut_frac: float = 0.6  # 0.1..1.0, changed fraction between tracked frames = cut
+    segment_gap_reset_s: float = 3.0  # >= 0, tracks continue into a Segment starting this soon
     # embedding
     batch_size: int = 8  # 1..64
     num_threads: int = 0  # 0 = physical cores
@@ -232,6 +238,12 @@ _CHECKS: dict[str, _Check] = {
     "det_input_h": _num(32, 1920, integer=True),
     "det_threads": _num(0, 256, integer=True),
     "track_rate": _num(1.0, 30.0, integer=False),
+    "enable_tracking": _bool,
+    "track_match_iou": _num(0.05, 0.95, integer=False),
+    "track_min_hits": _num(1, 30, integer=True),
+    "track_buffer_s": _num(0.2, 30.0, integer=False),
+    "scene_cut_frac": _num(0.1, 1.0, integer=False),
+    "segment_gap_reset_s": _num(0.0, None, integer=False),
     "batch_size": _num(1, 64, integer=True),
     "num_threads": _num(0, 256, integer=True),
     "top_k": _num(1, 10000, integer=True),

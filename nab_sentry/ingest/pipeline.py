@@ -219,6 +219,7 @@ class _VideoState:
     index_touched: bool = False
     index_saved: bool = False
     job_killed: bool = False
+    tracking: bool = False  # TrackSink.begin_video ran for this video (rollback must undo it)
 
 
 class IngestPipeline:
@@ -394,6 +395,9 @@ class IngestPipeline:
             cfg.motion_pixel_delta, cfg.motion_method,  # type: ignore[arg-type]
         )
         gate.reset()
+        if tracker is not None:
+            tracker.begin_video(meta.camera_id, to_aware_local(meta.start_time).timestamp())
+            st.tracking = True
         queue: list[_Pending] = []
         batch = int(cfg.batch_size)
         passed = 0
@@ -451,6 +455,12 @@ class IngestPipeline:
         counts["passed"] = passed
         if passed == 0:
             raise UnreadableVideo(f"no frames passed the motion gate: {path}")
+        if tracker is not None:
+            # Inside the transaction: a later failure rolls the tracks back too. The drained
+            # records are stored from V2 task 11.3; until then they are dropped here, which
+            # also keeps the tracker's memory bounded.
+            tracker.end_video(to_aware_local(meta.start_time).timestamp()
+                              + float(source.decoded_index_count) / fps)
 
         # 7. playback file, then finalize the videos row (3.6, 6.5).
         self._check("playback_wait", path)
@@ -554,8 +564,14 @@ class IngestPipeline:
             log.warning("could not stop playback job", exc_info=True)
 
     def _rollback(self, path: Path, exc: BaseException, st: _VideoState) -> None:
-        """kill ffmpeg -> ROLLBACK -> index remove (+ save) -> delete files -> log (6.8, 7.7)."""
+        """kill ffmpeg -> ROLLBACK -> index remove (+ save) -> delete files -> log (6.8, 7.7);
+        the TrackSink is rolled back to its state before this video (V2 Requirement 10.6)."""
         self._kill_job(st)
+        if st.tracking and self.tracker is not None:
+            try:
+                self.tracker.rollback_video()
+            except Exception:
+                log.error("track rollback failed for %s", path, exc_info=True)
         try:
             self.db.rollback()  # no-op unless a failed COMMIT left the transaction open
         except Exception:

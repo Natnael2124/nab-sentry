@@ -26,6 +26,11 @@ touched, so each passed frame also gets ``crop`` vectors with class, confidence,
 (Requirements 4.5, 5.2). A missing or unreadable ONNX file exits 6 with its path and the
 Model_Fetcher command (Requirement 4.6). ``--set enable_detector=false`` gives frame-only ingest.
 
+Tracking (V2): with ``enable_tracking`` (default) and the detector on, a
+:class:`~nab_sentry.track.live.LiveTracks` runs the detector at ``track_rate`` while a scene is
+active and tracks objects per camera, across consecutive Segments in watch mode.
+``--set enable_tracking=false`` gives the V1 sample-rate-only behaviour.
+
 ``--watch`` (V2 Requirement 8) runs ``reconcile()`` and then polls ``data/videos/`` until
 Ctrl+C, ingesting each closed live Segment (see ``nab_sentry/ingest/watch.py``) in start-time
 order per camera, with up to 2 retries per failed Segment. Segment lengths come from the
@@ -237,6 +242,11 @@ def _run(
             kw["open_source"] = open_source
         if start_playback is not None:
             kw["start_playback"] = start_playback
+        if cfg.enable_tracking and detector is not None:
+            from nab_sentry.track.live import LiveTracks
+
+            # One instance for the whole run: in watch mode tracks continue across Segments.
+            kw["tracker"] = LiveTracks.from_config(cfg)
         pipeline = IngestPipeline(cfg, db, index, encoder, detector, **kw)
         pipeline.reconcile()
         if args.watch:

@@ -95,6 +95,15 @@ class FakeTrackSink:
     def update(self, frame, detections) -> None:
         self.updates.append((frame.index, frame.offset_s, len(detections)))
 
+    def begin_video(self, camera_id, start_t) -> None:
+        pass
+
+    def end_video(self, end_t) -> list:
+        return []
+
+    def rollback_video(self) -> None:
+        pass
+
 
 @st.composite
 def videos(draw):

@@ -65,8 +65,12 @@ def _close_log_handlers():
 @pytest.fixture
 def ws(tmp_path: Path) -> Path:
     """Workspace root with a stub models manifest and an empty data/videos/."""
+    return _make_ws(tmp_path)
+
+
+def _make_ws(tmp_path: Path) -> Path:
     models = tmp_path / "models"
-    models.mkdir()
+    models.mkdir(parents=True)
     stub = models / "stub.bin"
     stub.write_bytes(b"stub weights")
     digest = hashlib.sha256(stub.read_bytes()).hexdigest()
@@ -178,7 +182,9 @@ def test_enabled_detector_writes_crop_vectors(ws: Path, capsys) -> None:
         made.append((cfg.det_conf, cfg.det_iou, cfg.det_max_per_frame))
         return det
 
-    assert _run(ws, "--set", "enable_detector=true", detector_factory=factory) == 0
+    # V1 behaviour: one detector run per stored frame (tracking adds runs at track_rate).
+    assert _run(ws, "--set", "enable_detector=true", "--set", "enable_tracking=false",
+                detector_factory=factory) == 0
     assert made == [(0.35, 0.45, 10)]
     assert det.call_count > 0
 
@@ -215,3 +221,29 @@ def test_unloadable_index_exits_5_and_repair_fixes_it(ws: Path, capsys) -> None:
     assert _run(ws) == 0  # the video whose vectors were lost is ingested again
     assert capsys.readouterr().out.strip().splitlines()[-1].startswith(
         "ingested=1 failed=0 already_indexed=0")
+
+
+def test_tracking_adds_detector_runs_but_not_rows(ws: Path, tmp_path: Path, capsys) -> None:
+    """V2: with tracking on (default) the detector also runs at track_rate while the scene is
+    active, yet frames and vectors rows equal a run with tracking off (Property 23)."""
+    def rows(workspace: Path, *extra: str) -> tuple[list, int]:
+        det = FakeDetector(lambda frame, i: [Detection("person", 0.9, (2, 3, 30, 40)),
+                                             Detection("car", 0.2, (10, 5, 60, 45), high=False)])
+        assert _run(workspace, "--set", "enable_detector=true", *extra,
+                    detector_factory=lambda cfg, files: det) == 0
+        con = sqlite3.connect(workspace / "data" / "nab_sentry.db")
+        try:
+            got = con.execute("SELECT f.frame_idx, v.kind, v.det_class, v.det_conf, v.x1, v.y1, v.x2, v.y2 "
+                              "FROM vectors v JOIN frames f USING (frame_id) ORDER BY v.vector_id").fetchall()
+        finally:
+            con.close()
+        return got, det.call_count
+
+    _add_video(ws, "CAM-A_20250101T080000.mp4", 1)
+    with_tracking, calls_on = rows(ws)
+    other = _make_ws(tmp_path / "ws2")
+    _add_video(other, "CAM-A_20250101T080000.mp4", 1)
+    without, calls_off = rows(other, "--set", "enable_tracking=false")
+    assert with_tracking == without
+    assert calls_on > calls_off
+    assert all(r[2] != "car" for r in with_tracking)  # the low detection never becomes a crop
