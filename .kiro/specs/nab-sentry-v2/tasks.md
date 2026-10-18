@@ -22,14 +22,14 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
     - _Requirements: 1.1_
 
 - [ ] 2. Ground truth
-  - [ ] 2.1 Implement `scripts/contact_sheet.py VIDEO` (1 thumbnail/s stamped with offset, sheets of 60 under `data/bench/contact/`)
+  - [x] 2.1 Implement `scripts/contact_sheet.py VIDEO` (1 thumbnail/s stamped with offset, sheets of 60 under `data/bench/contact/`, suggested scene cuts with red borders, Ground_Truth_File template)
     - _Requirements: 2.1_
-  - [ ] 2.2 Implement `eval/ground_truth.py` loader + validation
+  - [x] 2.2 Implement `nab_sentry/ground_truth.py` loader + validation
     - _Requirements: 2.2, 2.3_
-  - [ ] 2.3 Property test: every single invalid entry is reported exactly once by name
+  - [x] 2.3 Property test: every single invalid entry is reported exactly once by name
     - File: `tests/test_ground_truth.py`
     - _Requirements: 2.3_
-  - [ ] 2.4 **(Integrator)** Label the Compilation_Video: scene cuts + Incidents into `eval/ground_truth/CAM-SEC01.yaml`
+  - [ ] 2.4 **(Integrator)** Label the Compilation_Video: scene cuts + Incidents into `eval/ground_truth/CAM-SEC01.yaml` (start from `data/bench/contact/CAM-SEC01_20261007T230010/CAM-SEC01.yaml`; 45 suggested cuts, some false where the camera is bumped)
     - _Requirements: 2.2_
   - [ ] 2.5 **(Integrator)** Replace the TODO entries in `eval/queries.yaml` with real queries; run `scripts/evaluate.py` and record recall@k / MRR as the V1 search baseline
     - _Requirements: 2.4_
