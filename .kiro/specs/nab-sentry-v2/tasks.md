@@ -58,7 +58,7 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
   - [x] 4.1b Idle run of `qwen3-vl:2b-instruct` (2026-10-18): sanity passes; ~1,100 image tokens at any input size, 35-48 s image encoding, ~13 tok/s, ~40 s per call with a one-sentence answer, process RSS peak 4.7 GB. Recorded in README. Follow-up if on-demand latency matters: llama.cpp server with an image-token cap, or a smaller VLM (SmolVLM2 / Moondream) with the same sanity check
   - [ ] 4.2 Run idle (`--label idle`) and loaded (`--label loaded`, while `scripts/benchmark.py` runs) on the Target_Hardware; record both summaries and 3 sample outputs per input in the README
     - _Requirements: 4.4_
-  - [ ] 4.3 Detector cost at tracking rates: benchmark `det_input_size` 416 / 480 / 640 and ONNX threads 2 / 4; report ms/frame and CPU share at Track_Rate 2, 3, 5
+  - [x] 4.3 Detector cost at tracking rates (`scripts/det_bench.py`, interleaved timing; results in README): **384x640 rectangular input, 2 threads: 36.7 ms median, recall 0.98 vs 640 (0.93 on small boxes), 11% busy at 3 fps / 18% at 5 fps**. Square 416/480 lose too many small/medium boxes; 4 threads give only 5-10%. The embedder (~37% busy at continuous activity) is now the largest per-camera cost
     - _Requirements: 5.1_
   - [x] 4.4 Spike: OpenCLIP zero-shot attribute tags on 24 person + 12 vehicle crops (results in design findings: vehicles ~80%, person top colour ~60%, clothing/carrying/headwear unreliable; ~25% of person crops are detector false positives)
     - _Requirements: 4A.1_
@@ -104,6 +104,7 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
 ### Phase B2: Tracking
 
 - [ ] 9. Detector and Track_Rate path
+  - [ ] 9.0 Rectangular detector input: generalise `letterbox` to `(h, w)`, add `det_input_h` / `det_input_w` to Config (default 384 x 640; `det_input_size` kept as the square shorthand), export `yolo11n_384x640.onnx` in `fetch_models.py` and add it to the manifest, default detector threads 2; update detector tests (letterbox round trip for rectangles)
   - [ ] 9.1 `Detection.high`; detector keeps ≥ `det_low_conf`; crop path uses only high; Config fields `det_low_conf`, `track_rate` with cross-field checks
     - _Requirements: 9.1, 9.4_
   - [ ] 9.2 Update detector post-processing tests and Config tests for the new fields

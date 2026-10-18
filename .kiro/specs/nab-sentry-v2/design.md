@@ -37,7 +37,7 @@ Step 3 (activity log from Tracks + Zones + CLIP attribute tags; on-demand small 
   - clothing type, carried objects and headwear: unreliable (about 40% or less). These are left to the on-demand VLM.
   - About a quarter of the sampled "person" crops were detector false positives (title-card text, a cat, a fence, window blinds) at `det_conf` 0.35. Tracking with `track_min_hits` and tagging from the best crop of a confirmed Track, with a vote across its crops, should remove most of them; Step 3 measures that.
 - **Tracking needs more than 1 fps.** ByteTrack associates by IoU between consecutive frames; at 1 fps a walking person's boxes often do not overlap. Detection + tracking therefore run at Track_Rate while there is activity; embedding stays at Sample_Rate.
-- **Measured (2026-10-18, real 1376x776 video, AC power, Balanced plan, 4 ONNX threads):** detector 103.6 ms/frame, embedder 126.7 ms/image at batch 8, decode 3.2 ms/frame; projected 26.4 min of ingest per footage hour at continuous activity. These are 2-3x slower than the V1 synthetic numbers. At 5 fps the detector alone would take ~52% of the CPU per active camera, so the Track_Rate default (5) is provisional: task 4.3 measures the detector at input sizes 416/480 and Track_Rate 2-3, and the decision note (Req 5) fixes it.
+- **Measured (2026-10-18, real 1376x776 video):** sequential per-stage runs vary up to 2x with the laptop CPU clock (the same 640 detector measured 51-104 ms), so only interleaved runs are compared. Interleaved (task 4.3): a **384x640 rectangular detector input with 2 threads takes 36.7 ms per frame with 0.98 recall against the square 640 model**, i.e. 11% of wall-clock time at 3 fps and 18% at 5 fps per active camera. Detector defaults change to 384x640, 2 threads, Track_Rate 3 (raise to 5 if task 10 shows ID switches). The OpenCLIP embedder (~127 ms per image, about 37% of wall-clock time at continuous activity) is now the largest per-camera cost; embedding only the best crops of each Track is the next lever.
 - **ByteTrack needs low-confidence detections** for its second association pass; V1 discards everything below `det_conf`.
 - **Segments as `.mkv`**: an MP4 whose writer dies has no `moov` atom and is unreadable; Matroska stays readable up to the last written cluster. Stream copy keeps the Recorder near 0% CPU.
 - **Telegram Bot API** is plain HTTPS + JSON/multipart; `httpx` (already pinned) is enough, no bot framework needed.
@@ -99,7 +99,9 @@ Which frames are "on the Sample_Rate cadence": with Track_Rate = k × Sample_Rat
 | Field | Default | Allowed | Notes |
 |---|---|---|---|
 | `motion_roi` | `None` | 4 floats in 0..1, x1<x2, y1<y2 | Per camera from Camera_Config; Config value is the fallback |
-| `track_rate` | 5.0 | 1..15, ≥ `sample_rate` | |
+| `track_rate` | 3.0 | 1..15, ≥ `sample_rate` | 11% detector busy per active camera at 384x640 (task 4.3) |
+| `det_input_h` / `det_input_w` | 384 / 640 | multiples of 32, 32..1920 | rectangular letterbox for 16:9 cameras |
+| `det_threads` | 2 | 1..16 | 4 threads gain only 5-10% |
 | `det_low_conf` | 0.1 | 0..1, ≤ `det_conf` | |
 | `track_match_iou` | 0.3 | 0.05..0.95 | |
 | `track_min_hits` | 3 | 1..30 | |
@@ -333,7 +335,7 @@ Each property is a Hypothesis test (`max_examples=100`, `deadline=None`, as V1).
 20. **Alert state machine** — for any sequence of transport successes/failures/restarts, each (alert, chat, step) is sent at most once after acceptance, and an Alert ends in `sent` or `failed`.
 21. **Command parsing** — `parse_command` accepts exactly the documented grammar; text from non-Allowed_Chats never produces a reply.
 22. **Retention consistency** — after retention, `reconcile()` reports no changes.
-23. **V1 search unchanged** — for the same footage, the set of `frames` rows and vectors (excluding `track_id`) with Track_Rate = 5 equals that with tracking disabled.
+23. **V1 search unchanged** — for the same footage, the set of `frames` rows and vectors (excluding `track_id`) with Track_Rate = 3 equals that with tracking disabled.
 
 ## Testing Strategy
 

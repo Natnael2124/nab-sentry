@@ -145,6 +145,27 @@ This video is a curated compilation of back-to-back incidents, so the 0.695 pass
 
 Synthetic: `CAM-SYN01_20250101T080000.mp4`, 200,000-vector FAISS index.
 
+### Detector input size (tracking rate)
+
+`scripts/det_bench.py VIDEO` exports YOLO11n at several input sizes into `data/bench/det/` (never touching `models/yolo11n.onnx`) and times them interleaved, so CPU clock changes hit all of them alike. 60 frames of the compilation video, 3 iterations each, 2026-10-18:
+
+| Input | Threads | Median ms | p95 ms | Busy @3 fps | Busy @5 fps | Recall vs 640 (all / small / medium / large) |
+|---|---|---|---|---|---|---|
+| 320 | 2 | 15.6 | 35.5 | 5% | 8% | 0.48 / 0.28 / 0.44 / 0.67 |
+| 416 | 2 | 25.8 | 56.3 | 8% | 13% | 0.67 / 0.38 / 0.74 / 0.79 |
+| 480 | 2 | 34.2 | 70.9 | 10% | 17% | 0.75 / 0.52 / 0.84 / 0.83 |
+| 640 | 2 | 60.5 | 113.0 | 18% | 30% | 1.00 (baseline) |
+| 640 | 4 | 55.9 | 101.7 | 17% | 28% | 1.00 (baseline) |
+| **384x640** | **2** | **36.7** | **66.4** | **11%** | **18%** | **0.98 / 0.93 / 1.00 / 1.00** |
+| 384x640 | 4 | 33.5 | 68.6 | 10% | 17% | 0.98 / 0.93 / 1.00 / 1.00 |
+
+"Busy" is the share of one camera's wall-clock time the detector needs at that tracking rate. "Recall vs 640" is agreement with the 640 model (same class, IoU >= 0.5), not ground truth; small boxes are under 80 px tall (114 boxes in total).
+
+- **A 384x640 rectangular input matches the square 640 model (recall 0.98) at about 60% of its cost**, because a square input wastes about 44% of its pixels on padding for 16:9 cameras. Square inputs below 640 lose many small and medium boxes.
+- **4 threads are barely faster than 2** (5-10%), so the detector should use 2 threads and leave the other cores to the embedder and the recorder.
+- **This laptop's CPU clock varies a lot.** Run one after another, the same 640 model measured anywhere from 51 to 104 ms per frame (including the 103.6 ms in the benchmark table above); p95 is about twice the median. The per-stage numbers above are therefore pessimistic, and only interleaved runs should be compared with each other.
+- **The embedder, not the detector, is now the largest cost while a camera is busy:** at 1 fps with about 1.9 crops per frame, OpenCLIP needs about 2.9 x 127 ms, roughly 37% of wall-clock time. Embedding only the best crops per track (instead of every crop at every sampled second) is the next lever.
+
 ### Local VLM (on-demand only)
 
 `scripts/vlm_bench.py VIDEO` times a local Ollama vision model after a vision sanity check (red image, `HELLO 42` text). Measured 2026-10-18, idle machine, same hardware as above:

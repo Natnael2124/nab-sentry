@@ -33,7 +33,7 @@ V1 glossary terms (Ingest_Pipeline, Sampler, Motion_Gate, Detector, Embedder, Me
 - **Recorder**: The process that captures a live source into Segments without re-encoding.
 - **Watcher**: `scripts/ingest.py --watch`, which ingests closed Segments as they appear.
 - **Closed_Segment**: A Segment that the Recorder has finished writing.
-- **Track_Rate**: Frames per second at which the Detector and Tracker run while there is activity (default 5, allowed 1 to 15, at least Sample_Rate).
+- **Track_Rate**: Frames per second at which the Detector and Tracker run while there is activity (default 3, allowed 1 to 15, at least Sample_Rate).
 - **Tracker**: The component that links detections across frames into Tracks (ByteTrack-style).
 - **Track**: A sequence of detections of one object of one class on one camera, with a camera-unique ID.
 - **Scene_Cut**: A frame whose changed-pixel fraction against the previous Track_Rate frame is at or above Scene_Cut_Fraction (default 0.6).
