@@ -1,0 +1,24 @@
+# Camera_Config example. Copy to config/cameras.yaml (git-ignored: it holds camera passwords)
+# and edit. Coordinates (roi, zones, lines) are fractions of the frame width/height, 0..1,
+# measured from the top-left corner. Use scripts/snapshot.py CAMERA_ID to get a frame with a
+# coordinate grid for drawing them.
+cameras:
+  # IP camera over RTSP: the H.264 stream is copied into segments without re-encoding.
+  - camera_id: CAM01
+    label: Front gate
+    source: rtsp://user:password@192.168.1.20:554/stream2
+    segment_s: 10
+    encoder: auto
+    roi: [0.0, 0.3, 1.0, 1.0]
+    zones:
+      yard: [[0.10, 0.55], [0.90, 0.55], [0.90, 1.00], [0.10, 1.00]]
+    lines:
+      gate-line: [[0.30, 0.60], [0.70, 0.60]]
+
+  # Phone or webcam on this laptop (DirectShow device name as listed by
+  # `ffmpeg -list_devices true -f dshow -i dummy`): encoded with Intel Quick Sync.
+  - camera_id: CAM02
+    label: Shop door (phone)
+    source: "dshow:Integrated Webcam"
+    segment_s: 10
+    encoder: auto

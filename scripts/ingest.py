@@ -3,6 +3,7 @@
 Usage::
 
     venv\\Scripts\\python.exe scripts\\ingest.py [paths...] [--repair] [--set name=value ...]
+    venv\\Scripts\\python.exe scripts\\ingest.py --watch [--cameras config\\cameras.yaml] [--poll-s 1]
 
 Steps: offline mode -> Config (``--set`` overrides, validated) -> logging -> model manifest
 check -> discover video files -> load Detector + Embedder -> open Metadata_Store and
@@ -24,6 +25,11 @@ builds ``OnnxYoloDetector`` from the manifest path of ``yolo11n.onnx`` (``det_co
 touched, so each passed frame also gets ``crop`` vectors with class, confidence, and box
 (Requirements 4.5, 5.2). A missing or unreadable ONNX file exits 6 with its path and the
 Model_Fetcher command (Requirement 4.6). ``--set enable_detector=false`` gives frame-only ingest.
+
+``--watch`` (V2 Requirement 8) runs ``reconcile()`` and then polls ``data/videos/`` until
+Ctrl+C, ingesting each closed live Segment (see ``nab_sentry/ingest/watch.py``) in start-time
+order per camera, with up to 2 retries per failed Segment. Segment lengths come from the
+Camera_Config when it exists; cameras not in it (e.g. ``replay_camera.py``) use 10 s.
 
 Exit codes (design "Exit codes"): 0 success; 1 no video files found or zero vectors in the
 index afterwards; 2 invalid Config; 4 manifest check failed; 5 index unavailable; 6 model
@@ -105,7 +111,25 @@ def build_parser() -> argparse.ArgumentParser:
                    help="only reconcile the Metadata_Store with the Vector_Index")
     p.add_argument("--set", dest="overrides", action="append", default=[], metavar="NAME=VALUE",
                    help="override a Config value (repeatable)")
+    p.add_argument("--watch", action="store_true",
+                   help="keep running and ingest live Segments as they are closed")
+    p.add_argument("--cameras", type=Path, default=_ROOT / "config" / "cameras.yaml",
+                   help="Camera_Config for per-camera segment lengths (watch mode)")
+    p.add_argument("--poll-s", type=float, default=1.0, help="watch-mode poll interval")
     return p
+
+
+def segment_lengths(path: Path) -> Callable[[str], float]:
+    """camera_id -> segment_s from the Camera_Config, default 10 s (also when the file is absent)."""
+    from nab_sentry.live.camera_config import DEFAULT_SEGMENT_S, CameraConfigError, load_cameras
+
+    lengths: dict[str, float] = {}
+    if path.is_file():
+        try:
+            lengths = {c.camera_id: float(c.segment_s) for c in load_cameras(path)}
+        except CameraConfigError as exc:
+            log.warning("watch: ignoring camera config: %s", exc)
+    return lambda cam: lengths.get(cam, float(DEFAULT_SEGMENT_S))
 
 
 def discover_videos(paths: Sequence[Path]) -> tuple[list[Path], list[Path]]:
@@ -190,7 +214,7 @@ def _run(
     videos, missing = discover_videos(paths)
     for p in missing:
         log.error("path not found: %s", p)
-    if not videos:
+    if not videos and not args.watch:
         _err("no video files found in " + ", ".join(str(p) for p in paths))
         return EXIT_FAILURE
 
@@ -223,6 +247,8 @@ def _run(
             kw["start_playback"] = start_playback
         pipeline = IngestPipeline(cfg, db, index, encoder, detector, **kw)
         pipeline.reconcile()
+        if args.watch:
+            return _watch(cfg, pipeline, segment_lengths(args.cameras), args.poll_s)
         report = pipeline.ingest_paths(videos)
         total = index.ntotal
         print(f"ingested={report.ingested} failed={report.failed} "
@@ -234,6 +260,18 @@ def _run(
         return EXIT_OK
     finally:
         db.close()
+
+
+def _watch(cfg: Config, pipeline: IngestPipeline, segment_s_for: Callable[[str], float],
+           poll_s: float) -> int:
+    import threading
+
+    from nab_sentry.ingest.watch import Watcher
+
+    watcher = Watcher(pipeline, cfg.videos_dir, segment_s_for, poll_s=poll_s)
+    print(f"watching {cfg.videos_dir} for closed Segments; Ctrl+C to stop", flush=True)
+    watcher.run(threading.Event())  # Ctrl+C -> KeyboardInterrupt -> main() returns 130
+    return EXIT_OK
 
 
 def _repair(cfg: Config) -> int:

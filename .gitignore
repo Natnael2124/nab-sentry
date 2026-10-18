@@ -14,3 +14,6 @@ thumbnails/
 models/
 .pytest_cache/
 .hypothesis/
+
+# Live camera config holds camera passwords
+config/cameras.yaml

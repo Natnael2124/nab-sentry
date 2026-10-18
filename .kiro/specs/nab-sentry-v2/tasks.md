@@ -75,31 +75,36 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
 ### Phase B1: Live input
 
 - [ ] 6. Camera configuration
-  - [ ] 6.1 Implement `nab_sentry/live/camera_config.py` (`CameraSpec`, `load_cameras`, `CameraConfigError`, `mask_url`) and `config/cameras.example.yaml`
+  - [x] 6.1 Implement `nab_sentry/live/camera_config.py` (`CameraSpec`, `load_cameras`, `CameraConfigError`, `mask_url`) and `config/cameras.example.yaml`
     - _Requirements: 6.1, 6.2, 6.4_
-  - [ ] 6.2 Property tests: round trip and one issue per invalid field (Property 6); URL masking (Property 7)
+  - [x] 6.2 Property tests: round trip and one issue per invalid field (Property 6); URL masking (Property 7)
     - File: `tests/test_camera_config.py`
-  - [ ] 6.3 Implement `scripts/snapshot.py CAMERA_ID` (one frame via ffmpeg, normalized grid overlay, `data/live/`)
+  - [x] 6.3 Implement `scripts/snapshot.py CAMERA_ID` (one frame via ffmpeg, normalized grid overlay, `data/live/`)
+    - Not yet run against a real camera (needs `config/cameras.yaml` and the Integrator's OK to switch a camera on)
     - _Requirements: 6.3_
 
 - [ ] 7. Recorder
-  - [ ] 7.1 Verify the bundled imageio-ffmpeg supports `-f dshow` and RTSP over TCP on this machine; if not, add a pinned ffmpeg to `models/bin/` via `fetch_models.py`
-  - [ ] 7.2 Implement `nab_sentry/live/recorder.py`: pure `recorder_command` (copy for RTSP, x264 + forced keyframes for dshow), `backoff(n)`, heartbeat writer; `scripts/record.py [CAMERA_ID ...]`
+  - [x] 7.1 Verify the bundled imageio-ffmpeg supports `-f dshow` and RTSP over TCP on this machine; if not, add a pinned ffmpeg to `models/bin/` via `fetch_models.py`
+    - ffmpeg 7.1 (gyan essentials): dshow, rtsp demuxer, segment + matroska muxers, libx264 and **h264_qsv** (Intel Quick Sync works on the i5-1145G7: about half the file size of x264 veryfast). The laptop webcam and the phone (Windows virtual camera) show up as dshow devices. Segment names have 1 s resolution, so sources must run in real time
+  - [x] 7.2 Implement `nab_sentry/live/recorder.py`: pure `recorder_command` (copy for RTSP, x264 + forced keyframes for dshow), `backoff(n)`, heartbeat writer; `scripts/record.py [CAMERA_ID ...]`
     - _Requirements: 7.1, 7.2, 7.3, 7.4_
-  - [ ] 7.3 Unit tests for `recorder_command` and `backoff`; slow test: record 25 s from a looped synthetic RTSP-free source (`-re` file input) and assert ≥ 2 readable `.mkv` Segments with valid names
+  - [x] 7.3 Unit tests for `recorder_command` and `backoff`; slow test: record 25 s from a looped synthetic RTSP-free source (`-re` file input) and assert ≥ 2 readable `.mkv` Segments with valid names
     - File: `tests/test_recorder.py`
-  - [ ] 7.4 Implement `scripts/replay_camera.py VIDEO CAMERA_ID` (same naming, `-re`, start = now)
+  - [x] 7.4 Implement `scripts/replay_camera.py VIDEO CAMERA_ID` (same naming, `-re`, start = now)
     - _Requirements: 17.1_
 
 - [ ] 8. Watch mode
-  - [ ] 8.1 Implement pure `closed_segments` in `nab_sentry/ingest/watch.py`
+  - [x] 8.1 Implement pure `closed_segments` in `nab_sentry/ingest/watch.py`
     - _Requirements: 8.2_
-  - [ ] 8.2 Property test (Property 8)
+  - [x] 8.2 Property test (Property 8)
     - File: `tests/test_watch_closed.py`
-  - [ ] 8.3 Add `--watch` to `scripts/ingest.py`: reconcile on start, 1 s poll, ordered per camera, ≤ 2 retries per failed Segment, clean Ctrl+C
+  - [x] 8.3 Add `--watch` to `scripts/ingest.py`: reconcile on start, 1 s poll, ordered per camera, ≤ 2 retries per failed Segment, clean Ctrl+C
     - _Requirements: 8.1, 8.3, 8.4, 8.5_
-  - [ ] 8.4 Set `busy_timeout = 5000` on every SQLite connection; test two processes writing concurrently
+  - [x] 8.4 Set `busy_timeout = 5000` on every SQLite connection; test two processes writing concurrently
+    - Already set by V1 `MetadataStore`; the cross-process test moves to task 15 (first second writer is the Notifier)
   - [ ] 8.5 Checkpoint: phone (DroidCam/dshow) or RTSP camera → Recorder → Watcher → searchable in the console
+    - Replay E2E done 2026-10-18 (40 s of the Compilation_Video as camera CAMT, isolated data dir): 4 Segments, all ingested; 2.8-4.7 s from a Segment closing to it being ingested; the last Segment closes by idleness ~16 s after its last write. Still needs a real camera run
+    - Known V1 issue seen here: every log line is printed twice (two handlers); fix before long-running use
 
 ### Phase B2: Tracking
 
