@@ -448,7 +448,11 @@ class IngestPipeline:
     def _detect(
         self, detector: Detector | None, path: Path, offset_s: float, image: np.ndarray
     ) -> list[tuple[Detection, tuple[int, int, int, int]]]:
-        """Kept detections with clamped boxes; inference errors -> warning, none (4.7, 4.8, 5.10)."""
+        """High detections with clamped boxes; inference errors -> warning, none (4.7, 4.8, 5.10).
+
+        Low detections (``Detection.high`` false, V2 Requirement 9.1) are dropped here: only
+        high ones get crops and embeddings, so search results equal V1's.
+        """
         if detector is None:
             return []
         try:
@@ -462,6 +466,8 @@ class IngestPipeline:
         h, w = image.shape[:2]
         out: list[tuple[Detection, tuple[int, int, int, int]]] = []
         for det in dets:
+            if not det.high:
+                continue
             box = clamp_box(*det.box, w, h)
             if box is None:
                 continue  # crop smaller than 1 px: no crop embedding (5.10)

@@ -99,7 +99,7 @@ Which frames are "on the Sample_Rate cadence": with Track_Rate = k × Sample_Rat
 | Field | Default | Allowed | Notes |
 |---|---|---|---|
 | `motion_roi` | `None` | 4 floats in 0..1, x1<x2, y1<y2 | Per camera from Camera_Config; Config value is the fallback |
-| `track_rate` | 3.0 | 1..15, ≥ `sample_rate` | 11% detector busy per active camera at 384x640 (task 4.3) |
+| `track_rate` | 3.0 | 1..30, ≥ `sample_rate` | 11% detector busy per active camera at 384x640 (task 4.3) |
 | `det_input_h` / `det_input_w` | 384 / 640 | multiples of 32, 32..1920 | rectangular letterbox for 16:9 cameras |
 | `det_threads` | 2 | 1..16 | 4 threads gain only 5-10% |
 | `det_low_conf` | 0.1 | 0..1, ≤ `det_conf` | |
@@ -115,7 +115,7 @@ Which frames are "on the Sample_Rate cadence": with Track_Rate = k × Sample_Rat
 | `disk_low_gb` | 10.0 | ≥ 0 | |
 | `retention_days` / `alert_retention_days` | 7 / 30 | 1..3650 | |
 
-Cross-field checks (`track_rate ≥ sample_rate`, `det_low_conf ≤ det_conf`) are added to `_CHECKS` as two-argument checks like `_default_limit`.
+There are no cross-field errors: V1 Property 11 requires every config made of in-range values to be valid, and a V1 user who lowers `det_conf` or raises `sample_rate` must not get errors about fields they never set. Instead `effective_low_conf(cfg) = min(det_low_conf, det_conf)` and `effective_track_rate(cfg) = max(track_rate, sample_rate)` are the values used.
 
 ### live/camera_config.py
 

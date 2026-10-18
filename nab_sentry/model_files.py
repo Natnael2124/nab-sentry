@@ -62,4 +62,5 @@ def default_detector_factory(cfg: Config, files: dict[str, Path]) -> Any:
         max_det=cfg.det_max_per_frame,
         input_size=detector_input(cfg),
         threads=cfg.det_threads,
+        low_conf=cfg.det_low_conf,
     )

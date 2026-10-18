@@ -31,11 +31,17 @@ TARGET_CLASSES: dict[int, str] = {
 
 @dataclass(frozen=True)
 class Detection:
-    """One kept detection in source-frame pixel coordinates."""
+    """One kept detection in source-frame pixel coordinates.
+
+    ``high`` is True when ``conf >= det_conf``. Low detections (``det_low_conf <= conf <
+    det_conf``) exist only for the tracker's second association pass (V2 Requirement 9.1);
+    they never get a crop or an embedding.
+    """
 
     cls: str
     conf: float
     box: tuple[int, int, int, int]  # x1, y1, x2, y2 in source-frame pixels
+    high: bool = True
 
 
 @runtime_checkable
@@ -199,14 +205,21 @@ def postprocess(
     conf: float,
     iou: float,
     max_det: int,
+    low_conf: float | None = None,
 ) -> list[Detection]:
     """Decode a YOLO11n ``(1, 84, N)`` output into kept ``Detection`` objects.
 
     Steps: transpose to ``(N, 84)``; best class per anchor; keep Target_Classes with
-    score >= ``conf``; undo the letterbox; class-wise greedy NMS (``_nms_indices``,
-    no extra score filter); ``clamp_box`` (drop boxes
-    under 1 px); sort by confidence desc (ties by ``x1`` then ``y1``); take ``max_det``.
+    score >= ``low_conf`` (``None``: same as ``conf``, the V1 behaviour); undo the letterbox;
+    class-wise greedy NMS (``_nms_indices``, no extra score filter); ``clamp_box`` (drop boxes
+    under 1 px); sort by confidence desc (ties by ``x1`` then ``y1``); take up to ``max_det``
+    high detections (score >= ``conf``) followed by up to ``max_det`` low ones.
+
+    The high detections are exactly the V1 result for ``conf``: NMS visits boxes highest
+    score first, so a lower-scoring box can never suppress a higher one, and the low boxes
+    have their own ``max_det`` budget.
     """
+    floor = conf if low_conf is None else min(low_conf, conf)
     arr = np.asarray(raw, dtype=np.float32)
     if arr.ndim == 3:
         if arr.shape[0] != 1:
@@ -227,7 +240,7 @@ def postprocess(
     keep = (
         np.isin(best_cls, target_ids)
         & np.isfinite(best_score)
-        & (best_score >= conf)
+        & (best_score >= floor)
         & np.isfinite(preds[:, :4]).all(axis=1)
         & (bw > 0)
         & (bh > 0)
@@ -253,11 +266,13 @@ def postprocess(
             if box is None:
                 continue
             c = float(min(max(score_k[i], 0.0), 1.0))
-            candidates.append((c, *box, TARGET_CLASSES[int(cid)]))
+            candidates.append((c, *box, TARGET_CLASSES[int(cid)], bool(score_k[i] >= conf)))
 
     candidates.sort(key=lambda t: (-t[0], t[1], t[2]))
-    return [Detection(cls=name, conf=c, box=(bx1, by1, bx2, by2))
-            for c, bx1, by1, bx2, by2, name in candidates[: int(max_det)]]
+    high = [t for t in candidates if t[6]][: int(max_det)]
+    low = [t for t in candidates if not t[6]][: int(max_det)]
+    return [Detection(cls=name, conf=c, box=(bx1, by1, bx2, by2), high=is_high)
+            for c, bx1, by1, bx2, by2, name, is_high in high + low]
 
 
 # ---------------------------------------------------------------------------
@@ -290,9 +305,12 @@ class OnnxYoloDetector:
         max_det: int,
         input_size: int | tuple[int, int] = 640,
         threads: int = 0,
+        low_conf: float | None = None,
     ) -> None:
         """``input_size`` is ``(height, width)`` or an int for a square input; it must match
-        the static input shape of the ONNX file (checked after loading)."""
+        the static input shape of the ONNX file (checked after loading). ``low_conf`` also returns
+        low detections for the tracker (a value above ``conf`` acts as ``conf``); ``None`` keeps
+        V1 behaviour."""
         th, tw = input_size if isinstance(input_size, (tuple, list)) else (input_size, input_size)
         issues = [
             issue
@@ -303,11 +321,14 @@ class OnnxYoloDetector:
                 _check_range("det_input_h", th, 32, 1920, integer=True),
                 _check_range("det_input_size", tw, 32, 1920, integer=True),
                 _check_range("det_threads", threads, 0, 256, integer=True),
+                None if low_conf is None
+                else _check_range("det_low_conf", low_conf, 0.0, 1.0, integer=False),
             )
             if issue is not None
         ]
         if issues:
             raise ConfigError(issues)
+        self.low_conf = None if low_conf is None else float(low_conf)
 
         self.model_path = Path(model_path)
         self.conf = float(conf)
@@ -351,4 +372,5 @@ class OnnxYoloDetector:
         except Exception as exc:  # noqa: BLE001 - surfaced to the pipeline as a warning
             raise DetectorInferenceError(f"ONNX inference failed: {exc}") from exc
         return postprocess(outputs[0], meta, frame_w, frame_h,
-                           self.conf, self.iou, self.max_det)
+                           self.conf, self.iou, self.max_det,
+                           getattr(self, "low_conf", None))  # tests build bare instances

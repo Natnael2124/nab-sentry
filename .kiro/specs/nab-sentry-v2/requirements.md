@@ -33,7 +33,7 @@ V1 glossary terms (Ingest_Pipeline, Sampler, Motion_Gate, Detector, Embedder, Me
 - **Recorder**: The process that captures a live source into Segments without re-encoding.
 - **Watcher**: `scripts/ingest.py --watch`, which ingests closed Segments as they appear.
 - **Closed_Segment**: A Segment that the Recorder has finished writing.
-- **Track_Rate**: Frames per second at which the Detector and Tracker run while there is activity (default 3, allowed 1 to 15, at least Sample_Rate).
+- **Track_Rate**: Frames per second at which the Detector and Tracker run while there is activity (default 3, allowed 1 to 30, at least Sample_Rate).
 - **Tracker**: The component that links detections across frames into Tracks (ByteTrack-style).
 - **Track**: A sequence of detections of one object of one class on one camera, with a camera-unique ID.
 - **Scene_Cut**: A frame whose changed-pixel fraction against the previous Track_Rate frame is at or above Scene_Cut_Fraction (default 0.6).
@@ -155,7 +155,7 @@ V1 glossary terms (Ingest_Pipeline, Sampler, Motion_Gate, Detector, Embedder, Me
 1. THE Detector SHALL return detections at or above `det_low_conf` (default 0.1), each flagged high when at or above `det_conf`.
 2. THE Ingest_Pipeline SHALL run the Detector and Tracker on frames at Track_Rate whenever the Motion_Gate passes the frame or any Track is active.
 3. THE Ingest_Pipeline SHALL create `frames` rows, Thumbnails, frame Embeddings and crop Embeddings only for frames at the Sample_Rate cadence, and crop Embeddings only for high detections, so V1 search results are unchanged for the same footage.
-4. IF `track_rate` is below `sample_rate`, or `det_low_conf` is above `det_conf`, THEN Config validation SHALL name the parameter.
+4. Config validation SHALL accept every combination of in-range values (V1 Property 11); THE Ingest_Pipeline SHALL use `max(track_rate, sample_rate)` as the tracking rate and `min(det_low_conf, det_conf)` as the low-detection floor.
 
 ### Requirement 10: Multi-object tracking
 

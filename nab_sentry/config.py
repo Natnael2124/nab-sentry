@@ -65,11 +65,16 @@ class Config:
     # detection
     enable_detector: bool = True
     det_conf: float = 0.35  # 0.0..1.0
+    det_low_conf: float = 0.1  # 0.0..1.0; low detections feed only the tracker (V2 9.1);
+    # values above det_conf act as det_conf (no low detections), so a V1 config stays valid
     det_iou: float = 0.45  # 0.0..1.0
     det_max_per_frame: int = 10  # 1..100
     det_input_size: int = 640  # 32..1920, detector input width (V2 task 9.0)
     det_input_h: int = 384  # 32..1920, detector input height; = det_input_size for a square input
     det_threads: int = 2  # 0..256, ONNX threads for the detector; 0 = physical cores
+    # tracking (V2)
+    track_rate: float = 3.0  # 1..30; detector + tracker fps while active; the effective
+    # rate is max(track_rate, sample_rate) (see effective_track_rate), so V1 configs stay valid
     # embedding
     batch_size: int = 8  # 1..64
     num_threads: int = 0  # 0 = physical cores
@@ -125,6 +130,16 @@ class Config:
         issues = self.validate()
         if issues:
             raise ConfigError(issues)
+
+
+def effective_low_conf(cfg: Config) -> float:
+    """Low-detection floor actually used: never above ``det_conf`` (V2 Requirement 9.1)."""
+    return min(float(cfg.det_low_conf), float(cfg.det_conf))
+
+
+def effective_track_rate(cfg: Config) -> float:
+    """Detector + tracker rate actually used: never below ``sample_rate`` (V2 Requirement 9.2)."""
+    return max(float(cfg.track_rate), float(cfg.sample_rate))
 
 
 # --------------------------------------------------------------------------- checks
@@ -210,11 +225,13 @@ _CHECKS: dict[str, _Check] = {
     "gate_width": _num(64, 1920, integer=True),
     "enable_detector": _bool,
     "det_conf": _num(0.0, 1.0, integer=False),
+    "det_low_conf": _num(0.0, 1.0, integer=False),
     "det_iou": _num(0.0, 1.0, integer=False),
     "det_max_per_frame": _num(1, 100, integer=True),
     "det_input_size": _num(32, 1920, integer=True),
     "det_input_h": _num(32, 1920, integer=True),
     "det_threads": _num(0, 256, integer=True),
+    "track_rate": _num(1.0, 30.0, integer=False),
     "batch_size": _num(1, 64, integer=True),
     "num_threads": _num(0, 256, integer=True),
     "top_k": _num(1, 10000, integer=True),
