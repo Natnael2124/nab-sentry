@@ -124,9 +124,11 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
     - _Requirements: 9.3_
 
 - [ ] 10. Tracker
-  - [ ] 10.1 Implement `nab_sentry/track/bytetrack.py` (two-pass greedy IoU per class, constant-velocity prediction, min hits, buffer expiry, `end_all`, snapshot/restore)
+  - [x] 10.1 Implement `nab_sentry/track/bytetrack.py` (two-pass greedy IoU per class, constant-velocity prediction, min hits, buffer expiry, `end_all`, snapshot/restore)
+    - Done 2026-10-18. Tentative tracks die at their first miss (ByteTrack); confirmed ones after `buffer_s` without a match. Tracker clock is absolute seconds (`begin_video(start)`) so tracks can span Segments. `drain()` hands out each observation once, back-filling hits from before confirmation. Track keys are tracker-local; mapping to `tracks.track_id` happens in task 11.3
+    - Real detector at 3 fps over the whole Compilation_Video, reset at the 45 suggested cuts: 414 tracks started, 245 dropped as tentative (one-off detections), 169 confirmed (73 person, 76 car, 16 truck, 2 bicycle, 2 motorcycle; median 3-5 s, max 19 s). Tracker step 0.06 ms median. Fragmentation (one person split into several tracks) still to be measured against labels (11.5)
     - _Requirements: 10.1, 10.2, 10.4_
-  - [ ] 10.2 Property tests: assignment invariant (9), linear-motion stability (10), expiry (11), snapshot/restore (12)
+  - [x] 10.2 Property tests: assignment invariant (9), linear-motion stability (10), expiry (11), snapshot/restore (12); plus drain-exactly-once and examples (low boxes continue but never start tracks, class separation, velocity bridging fast motion)
     - File: `tests/test_bytetrack.py`
   - [ ] 10.3 Scene_Cut handling in the pipeline (`scene_cut_frac`) and per-camera live state carried across Segments with `segment_gap_reset_s`
     - _Requirements: 10.4, 10.5_
