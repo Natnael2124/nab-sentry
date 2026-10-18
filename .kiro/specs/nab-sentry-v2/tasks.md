@@ -115,9 +115,11 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
     - Done 2026-10-18. High and low detections each get their own `det_max_per_frame` budget, so the high set is exactly V1's (property test on random YOLO outputs; real model: identical on 60/60 frames, plus ~2 low boxes per frame). No cross-field errors (they broke V1 Property 11: a V1 user setting `det_conf=0.05` would get an error about `det_low_conf`); instead `effective_low_conf = min(det_low_conf, det_conf)` and `effective_track_rate = max(track_rate, sample_rate)`. `track_rate` allowed 1..30
     - _Requirements: 9.1, 9.4_
   - [x] 9.2 Update detector post-processing tests and Config tests for the new fields (`tests/test_detector_low_conf.py`)
-  - [ ] 9.3 Pipeline: Sampler at Track_Rate; gate bypass while a Track is active; frames/thumbnails/embeddings only on the Sample_Rate cadence
+  - [x] 9.3 Pipeline: Sampler at Track_Rate; gate bypass while a Track is active; frames/thumbnails/embeddings only on the Sample_Rate cadence
+    - Done 2026-10-18. `DualSampler` reads frames once and marks each as sample-rate and/or tracking-rate. The motion gate runs only on sample-rate frames (running it at 3 fps would compare frames 0.33 s apart and change V1 decisions). A `TrackSink` (`nab_sentry/track`) gets every detector run (high + low). Tracking-only frames are detected only while the last sample frame showed motion (changed fraction >= threshold, also when labelled keyframe) or a track is alive; a still keyframe or the first frame starts nothing. No tracker attached = exactly V1
+    - Real models, 60 s of the Compilation_Video, never-active tracker: identical frames and vectors rows; detector runs 40 -> 118, ingest 9.6 -> 12.0 s
     - _Requirements: 9.2, 9.3_
-  - [ ] 9.4 Property test: V1 rows/vectors unchanged with tracking on vs off (Property 23)
+  - [x] 9.4 Property test: V1 rows/vectors unchanged with tracking on vs off (Property 23)
     - File: `tests/test_pipeline_track_rate.py`
     - _Requirements: 9.3_
 

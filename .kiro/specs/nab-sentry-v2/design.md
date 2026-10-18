@@ -71,8 +71,8 @@ The processes communicate only through files and SQLite. SQLite is already in WA
 1. Src_Hash, metadata from the file name, open the source (V1).
 2. `BEGIN IMMEDIATE`; camera + videos row; playback job (V1; a stream-copied H.264 `.mkv` is remuxed, not re-encoded).
 3. **Snapshot the camera's live state** (tracker, zone membership, rule progress) for rollback.
-4. **Sampler at Track_Rate.** For each frame:
-   - Motion_Gate evaluates (with the camera ROI). **If the gate rejects the frame and no Track is active, skip it** (as V1).
+4. **DualSampler at Sample_Rate and Track_Rate in one pass.** For each frame:
+   - On sample-rate frames only, the Motion_Gate evaluates (with the camera ROI) exactly as V1; running it at Track_Rate would compare frames closer together and change V1 decisions. **A tracking-only frame is detected only while the last sample frame showed motion (changed fraction >= threshold) or a Track is active**; a rejected sample frame is detected only while a Track is active.
    - **Scene_Cut check → end all Tracks.**
    - **Detector (high + low detections) → Tracker.update → track observations.**
    - **Zone membership + rule evaluation → zero or more alerts rows + snapshot JPEGs** (recorded in `written_files`).

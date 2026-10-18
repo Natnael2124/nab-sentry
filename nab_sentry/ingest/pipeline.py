@@ -36,12 +36,12 @@ from typing import Any, Literal
 
 import numpy as np
 
-from nab_sentry.config import Config
+from nab_sentry.config import Config, effective_track_rate
 from nab_sentry.embed.clip_encoder import EmbeddingError, Encoder
 from nab_sentry.ingest.detector import Detection, Detector, clamp_box
 from nab_sentry.ingest.metadata import resolve_metadata, src_hash, to_aware_local
 from nab_sentry.ingest.motion import GateDecision, MotionGate
-from nab_sentry.ingest.sampler import Sampler
+from nab_sentry.ingest.sampler import DualSampler, Sampler
 from nab_sentry.ingest.sources import (
     FileSource,
     UnknownFrameRate,
@@ -52,6 +52,7 @@ from nab_sentry.ingest.transcode import PlaybackJob, default_playback, part_path
 from nab_sentry.logging_setup import get_logger
 from nab_sentry.store.db import MetadataStore, NewFrame, NewVector, NewVideo
 from nab_sentry.store.vector_index import VectorIndex
+from nab_sentry.track import TrackSink
 
 log = get_logger("ingest")
 
@@ -232,12 +233,14 @@ class IngestPipeline:
         start_playback: Callable[[Path, Path], PlaybackJob] | None = None,
         *,
         checkpoint: Checkpoint | None = None,
+        tracker: TrackSink | None = None,
     ) -> None:
         self.cfg = cfg
         self.db = db
         self.index = index
         self.encoder = encoder
         self.detector = detector
+        self.tracker = tracker  # None: exactly V1 (sample rate only, no extra detector runs)
         self.open_source = open_source
         self.start_playback = start_playback or (
             lambda src, dst: default_playback(src, dst, cfg.playback_max_width)
@@ -375,22 +378,48 @@ class IngestPipeline:
         self._check("playback_start", path)
 
         # 5. sample, gate, frames rows, thumbnails, detector, batched embedding.
-        sampler = Sampler(cfg.sample_rate)
+        #    With a TrackSink (V2 9.2) frames are also taken at the tracking rate; the gate
+        #    and everything V1 stores still use only the sample-rate frames (``on_sample``).
+        detector = self._active_detector
+        tracker = self.tracker if detector is not None else None
+        sampler: Sampler | DualSampler
+        if tracker is not None:
+            sampler = DualSampler(cfg.sample_rate, effective_track_rate(cfg))
+            selected: Iterable[tuple[Any, bool]] = sampler.select(source.frames())
+        else:
+            sampler = Sampler(cfg.sample_rate)
+            selected = ((f, True) for f in sampler.select(source.frames()))
         gate = MotionGate(
             cfg.motion_threshold, cfg.keyframe_interval_s, cfg.gate_width,
             cfg.motion_pixel_delta, cfg.motion_method,  # type: ignore[arg-type]
         )
         gate.reset()
-        detector = self._active_detector
         queue: list[_Pending] = []
         batch = int(cfg.batch_size)
         passed = 0
+        last_motion = False  # the last sample-rate frame showed motion (fraction >= threshold)
 
-        for frame in sampler.select(source.frames()):
+        for frame, on_sample in selected:
             self._check("frame", path)
+            if not on_sample:
+                # Tracking-rate frame between sample-rate frames: detect only while the
+                # scene is active - the last sample-rate frame showed motion (its changed
+                # fraction, whatever the gate's label: a keyframe can carry motion too), or
+                # a track is alive. A still keyframe or the first frame starts nothing.
+                if tracker is not None and (last_motion or tracker.active):
+                    tracker.update(frame, self._run_detector(detector, path, frame.offset_s,
+                                                             frame.image))
+                continue
             decision = gate.evaluate(frame)
+            last_motion = decision.passed and decision.reason != "first" and (
+                decision.fraction >= cfg.motion_threshold)
             if not decision.passed:
-                continue  # static / empty: no row, no thumbnail, no embedding (3.7, 3.9)
+                # static / empty: no row, no thumbnail, no embedding (3.7, 3.9); a live track
+                # keeps the detector running so a person standing still is not lost.
+                if tracker is not None and tracker.active and frame.image.size:
+                    tracker.update(frame, self._run_detector(detector, path, frame.offset_s,
+                                                             frame.image))
+                continue
             passed += 1
             image = frame.image
             name = thumb_name(video_id, frame.index)
@@ -404,7 +433,10 @@ class IngestPipeline:
             write_thumbnail(image, thumb, cfg.thumb_width)
 
             queue.append(_Pending(frame_id, image, None))
-            for det, box in self._detect(detector, path, frame.offset_s, image):
+            dets = self._run_detector(detector, path, frame.offset_s, image)
+            if tracker is not None:
+                tracker.update(frame, dets)
+            for det, box in self._crops(dets, image):
                 x1, y1, x2, y2 = box
                 queue.append(_Pending(frame_id, image[y1:y2, x1:x2], det, box))
             while len(queue) >= batch:
@@ -448,21 +480,34 @@ class IngestPipeline:
     def _detect(
         self, detector: Detector | None, path: Path, offset_s: float, image: np.ndarray
     ) -> list[tuple[Detection, tuple[int, int, int, int]]]:
-        """High detections with clamped boxes; inference errors -> warning, none (4.7, 4.8, 5.10).
+        """High detections with clamped boxes; inference errors -> warning, none (4.7, 4.8, 5.10)."""
+        return self._crops(self._run_detector(detector, path, offset_s, image), image)
 
-        Low detections (``Detection.high`` false, V2 Requirement 9.1) are dropped here: only
-        high ones get crops and embeddings, so search results equal V1's.
-        """
+    @staticmethod
+    def _run_detector(
+        detector: Detector | None, path: Path, offset_s: float, image: np.ndarray
+    ) -> list[Detection]:
+        """All detections (high and low); inference errors -> warning, none (4.7, 4.8)."""
         if detector is None:
             return []
         try:
-            dets = list(detector.detect(image))
+            return list(detector.detect(image))
         except Exception as exc:
             log.warning(
                 "detector failed: %s at offset %.3f s: %s; storing frame with zero detections",
                 path, offset_s, exc,
             )
             return []
+
+    @staticmethod
+    def _crops(
+        dets: list[Detection], image: np.ndarray
+    ) -> list[tuple[Detection, tuple[int, int, int, int]]]:
+        """High detections with clamped boxes (5.10).
+
+        Low detections (``Detection.high`` false, V2 Requirement 9.1) are dropped here: only
+        high ones get crops and embeddings, so search results equal V1's.
+        """
         h, w = image.shape[:2]
         out: list[tuple[Detection, tuple[int, int, int, int]]] = []
         for det in dets:
