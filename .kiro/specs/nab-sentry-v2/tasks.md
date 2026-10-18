@@ -109,7 +109,8 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
 ### Phase B2: Tracking
 
 - [ ] 9. Detector and Track_Rate path
-  - [ ] 9.0 Rectangular detector input: generalise `letterbox` to `(h, w)`, add `det_input_h` / `det_input_w` to Config (default 384 x 640; `det_input_size` kept as the square shorthand), export `yolo11n_384x640.onnx` in `fetch_models.py` and add it to the manifest, default detector threads 2; update detector tests (letterbox round trip for rectangles)
+  - [x] 9.0 Rectangular detector input: generalise `letterbox` to `(h, w)`, add `det_input_h` / `det_input_w` to Config (default 384 x 640; `det_input_size` kept as the square shorthand), export `yolo11n_384x640.onnx` in `fetch_models.py` and add it to the manifest, default detector threads 2; update detector tests (letterbox round trip for rectangles)
+    - Done 2026-10-18. Config: `det_input_size` stays the width, new `det_input_h` (default 384) and `det_threads` (default 2). `OnnxYoloDetector` accepts `(h, w)` and refuses an ONNX file exported for another shape. `fetch_models.py` exports `yolo11n.onnx` + `yolo11n_384x640.onnx` and has `--export-only` (offline re-export from `yolo11n.pt`). Local models re-exported: the new 640 export gives identical boxes to the original on 40 frames; the 384x640 default agrees on 94.9% of boxes at 33.7 ms vs 48-51 ms
   - [ ] 9.1 `Detection.high`; detector keeps ≥ `det_low_conf`; crop path uses only high; Config fields `det_low_conf`, `track_rate` with cross-field checks
     - _Requirements: 9.1, 9.4_
   - [ ] 9.2 Update detector post-processing tests and Config tests for the new fields

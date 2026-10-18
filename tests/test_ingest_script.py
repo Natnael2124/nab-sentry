@@ -13,9 +13,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from nab_sentry.config import Config
 from nab_sentry.ingest.detector import Detection
 from nab_sentry.ingest.sources import UnreadableVideo
 from nab_sentry.logging_setup import LOGGER_NAME
+from nab_sentry.model_files import detector_input, detector_rel
 from nab_sentry.startup import FETCH_HINT
 from nab_sentry.store.vector_index import VectorIndex
 from tests.fakes import FakeDetector, FakeEncoder, FakePlayback, FakeSource
@@ -146,7 +148,8 @@ def test_zero_vectors_afterwards_exits_1(ws: Path, capsys) -> None:
 
 
 def test_enabled_detector_with_missing_onnx_exits_6(ws: Path, capsys) -> None:
-    # The stub manifest has no yolo11n.onnx, so the default factory raises ModelMissingError
+    # The stub manifest has no detector ONNX for the configured input shape (V2 default
+    # 384 x 640), so the default factory raises ModelMissingError
     # before any video is opened or the store is created (Requirement 4.6).
     _add_video(ws, "CAM-A_20250101T080000.mp4", 1)
     opened: list[Path] = []
@@ -157,7 +160,7 @@ def test_enabled_detector_with_missing_onnx_exits_6(ws: Path, capsys) -> None:
 
     assert _run(ws, "--set", "enable_detector=true", open_source=spy_source) == 6
     err = capsys.readouterr().err
-    assert str(ws / "models" / "yolo11n.onnx") in err
+    assert str(ws / "models" / detector_rel(*detector_input(Config()))) in err
     assert FETCH_HINT in err
     assert opened == []
     assert not (ws / "data" / "nab_sentry.db").exists()

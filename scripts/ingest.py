@@ -20,8 +20,8 @@ reconciliation deletes the videos whose vectors were lost and the next ingest re
 Without ``--repair`` an index file that exists but cannot be loaded exits 5.
 
 Detector: when ``Config.enable_detector`` is true (default), :func:`default_detector_factory`
-builds ``OnnxYoloDetector`` from the manifest path of ``yolo11n.onnx`` (``det_conf``,
-``det_iou``, ``det_max_per_frame``, ``det_input_size``, ``num_threads``) before any video is
+builds ``OnnxYoloDetector`` from the manifest path of the ONNX export for
+``det_input_h`` x ``det_input_size`` (``det_conf``, ``det_iou``, ``det_max_per_frame``, ``det_threads``) before any video is
 touched, so each passed frame also gets ``crop`` vectors with class, confidence, and box
 (Requirements 4.5, 5.2). A missing or unreadable ONNX file exits 6 with its path and the
 Model_Fetcher command (Requirement 4.6). ``--set enable_detector=false`` gives frame-only ingest.
@@ -69,7 +69,6 @@ EXIT_MODEL_LOAD = 6
 EXIT_INTERRUPTED = 130
 
 EMBEDDER_REL = "open_clip/ViT-B-32-laion2b_s34b_b79k/open_clip_pytorch_model.bin"
-DETECTOR_REL = "yolo11n.onnx"
 
 # (cfg, manifest files rel->abs) -> Encoder / Detector
 EncoderFactory = Callable[[Config, dict[str, Path]], Any]
@@ -86,18 +85,11 @@ def default_encoder_factory(cfg: Config, files: dict[str, Path]) -> Any:
 
 
 def default_detector_factory(cfg: Config, files: dict[str, Path]) -> Any:
-    """Build ``OnnxYoloDetector`` from the manifest path (``ModelMissingError`` if absent)."""
-    from nab_sentry.ingest.detector import OnnxYoloDetector  # onnxruntime loads lazily
+    """Build ``OnnxYoloDetector`` from the manifest path of the configured input shape
+    (``ModelMissingError`` if absent or exported for another shape)."""
+    from nab_sentry.model_files import default_detector_factory as factory
 
-    path = files.get(DETECTOR_REL, cfg.models_dir / DETECTOR_REL)
-    return OnnxYoloDetector(
-        path,
-        conf=cfg.det_conf,
-        iou=cfg.det_iou,
-        max_det=cfg.det_max_per_frame,
-        input_size=cfg.det_input_size,
-        threads=cfg.num_threads,
-    )
+    return factory(cfg, files)
 
 
 def build_parser() -> argparse.ArgumentParser:

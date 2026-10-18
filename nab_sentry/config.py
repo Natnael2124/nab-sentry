@@ -67,7 +67,9 @@ class Config:
     det_conf: float = 0.35  # 0.0..1.0
     det_iou: float = 0.45  # 0.0..1.0
     det_max_per_frame: int = 10  # 1..100
-    det_input_size: int = 640
+    det_input_size: int = 640  # 32..1920, detector input width (V2 task 9.0)
+    det_input_h: int = 384  # 32..1920, detector input height; = det_input_size for a square input
+    det_threads: int = 2  # 0..256, ONNX threads for the detector; 0 = physical cores
     # embedding
     batch_size: int = 8  # 1..64
     num_threads: int = 0  # 0 = physical cores
@@ -211,6 +213,8 @@ _CHECKS: dict[str, _Check] = {
     "det_iou": _num(0.0, 1.0, integer=False),
     "det_max_per_frame": _num(1, 100, integer=True),
     "det_input_size": _num(32, 1920, integer=True),
+    "det_input_h": _num(32, 1920, integer=True),
+    "det_threads": _num(0, 256, integer=True),
     "batch_size": _num(1, 64, integer=True),
     "num_threads": _num(0, 256, integer=True),
     "top_k": _num(1, 10000, integer=True),

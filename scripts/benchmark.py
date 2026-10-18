@@ -62,7 +62,7 @@ from nab_sentry.startup import enable_offline_mode  # noqa: E402  (stdlib-only)
 enable_offline_mode()
 
 from nab_sentry.config import Config, ConfigError, load_config, parse_set_args  # noqa: E402
-from nab_sentry.model_files import DETECTOR_REL, EMBEDDER_REL, detector_path, embedder_path  # noqa: E402,F401
+from nab_sentry.model_files import DETECTOR_REL, EMBEDDER_REL, detector_input, detector_path, embedder_path  # noqa: E402,F401
 from nab_sentry.startup import require_models  # noqa: E402
 
 WARMUP_ITERS = 5
@@ -505,7 +505,7 @@ def run_video_stages(video: Path, cfg: Config, iters: int,
 
         detector = OnnxYoloDetector(det_path, conf=cfg.det_conf, iou=cfg.det_iou,
                                     max_det=cfg.det_max_per_frame,
-                                    input_size=cfg.det_input_size, threads=threads)
+                                    input_size=detector_input(cfg), threads=threads)
         stats, dets = bench_detector(detector, images, iters)
         ok("detector", "ms/frame", stats)
     except Exception as exc:  # noqa: BLE001

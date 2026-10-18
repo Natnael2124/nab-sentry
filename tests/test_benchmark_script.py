@@ -156,12 +156,15 @@ def _write_clip(path: Path, frames: int = 30) -> None:
 
 
 def test_unloadable_models_report_stage_and_file_exit_1(tmp_path):
-    from nab_sentry.model_files import DETECTOR_REL, EMBEDDER_REL
+    from nab_sentry.config import Config
+    from nab_sentry.model_files import EMBEDDER_REL, detector_input, detector_rel
     from nab_sentry.startup import sha256_file
+
+    det_rel = detector_rel(*detector_input(Config()))  # the ONNX file for the default input shape
 
     models = tmp_path / "models"
     entries = []
-    for role, rel in (("detector", DETECTOR_REL), ("embedder", EMBEDDER_REL)):
+    for role, rel in (("detector", det_rel), ("embedder", EMBEDDER_REL)):
         f = models / rel
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(b"not a model " + role.encode())
@@ -180,7 +183,7 @@ def test_unloadable_models_report_stage_and_file_exit_1(tmp_path):
     assert proc.returncode == 1, proc.stdout + proc.stderr
     # model stages fail naming the stage and the file
     assert "stage=embedder_b8" in proc.stderr and "open_clip_pytorch_model.bin" in proc.stderr
-    assert "stage=detector" in proc.stderr and "yolo11n.onnx" in proc.stderr
+    assert "stage=detector" in proc.stderr and det_rel in proc.stderr
     # completed stages are still reported
     for stage in ("decode", "motion_gate", "thumbnail"):
         line = next(ln for ln in proc.stdout.splitlines() if ln.startswith(stage + " "))

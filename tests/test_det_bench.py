@@ -61,14 +61,6 @@ def test_busy_fraction():
     assert db.busy_fraction(100.0, 5) == pytest.approx(0.5)
 
 
-def test_letterbox_rect_shape_and_meta():
-    frame = np.zeros((776, 1376, 3), np.uint8)
-    tensor, meta = db.letterbox_rect(frame, (384, 640))
-    assert tensor.shape == (1, 3, 384, 640)
-    assert meta.scale == pytest.approx(640 / 1376)
-    assert meta.pad_x == 0 and meta.pad_y == pytest.approx((384 - round(776 * 640 / 1376)) // 2)
-
-
 class _Fake:
     def __init__(self, tag):
         self.tag, self.calls = tag, 0

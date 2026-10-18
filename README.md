@@ -28,7 +28,9 @@ data/
 models/
   manifest.json      SHA-256 of every model file
   open_clip/ViT-B-32-laion2b_s34b_b79k/open_clip_pytorch_model.bin
-  yolo11n.onnx
+  yolo11n.pt         source weights for the ONNX exports
+  yolo11n.onnx       detector, 640 x 640 input
+  yolo11n_384x640.onnx  detector, 384 x 640 input (default, suits 16:9 cameras)
 ```
 
 ## Model provisioning
@@ -39,7 +41,15 @@ Run once on a machine with internet access:
 venv\Scripts\python.exe scripts\fetch_models.py
 ```
 
-This downloads the OpenCLIP ViT-B/32 (`laion2b_s34b_b79k`) weights and `yolo11n.pt` (3 attempts each), exports `models\yolo11n.onnx`, smoke-loads both, and writes `models\manifest.json` last. Any failure exits 1, names the failing file, and leaves no manifest. Use `--models-dir <path>` to write elsewhere.
+This downloads the OpenCLIP ViT-B/32 (`laion2b_s34b_b79k`) weights and `yolo11n.pt` (3 attempts each), exports the detector once per input shape (`models\yolo11n.onnx` for 640 x 640 and `models\yolo11n_384x640.onnx` for 384 x 640), smoke-loads every file, and writes `models\manifest.json` last. Any failure exits 1, names the failing file, and leaves no manifest. Use `--models-dir <path>` to write elsewhere.
+
+`--export-only` skips the downloads and re-exports the detector from the `yolo11n.pt` and OpenCLIP weights already in `models\`. Use it offline after an update adds a new input shape:
+
+```powershell
+venv\Scripts\python.exe scripts\fetch_models.py --export-only
+```
+
+The detector input is `det_input_h` x `det_input_size` (default 384 x 640) and must match an exported file; `--set det_input_h=640` selects the square 640 model. The detector uses `det_threads` ONNX threads (default 2; 4 threads were only 5-10% faster in `scripts/det_bench.py`), separate from the embedder's `num_threads`.
 
 Then copy the whole `models\` folder to `models\` in the workspace on the offline demo machine. Every startup verifies the manifest hashes and exits 4 with the fetch command if a file is missing or altered.
 

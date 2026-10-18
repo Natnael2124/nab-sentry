@@ -7,8 +7,8 @@ Usage::
 
 Each size is exported once from ``models/yolo11n.pt`` with Ultralytics (static shape, no NMS,
 like ``fetch_models.py``) into ``data/bench/det/`` - the production ``models/yolo11n.onnx`` is
-never touched. A size ``HxW`` exports a rectangular model; its letterbox pads to ``H x W``
-instead of a square, which suits 16:9 cameras.
+never touched. A size ``HxW`` exports a rectangular model (the detector letterboxes to ``H x W``),
+which suits 16:9 cameras.
 
 For every size x thread count the script reports median / p95 ms per frame over ``--frames``
 frames spread across VIDEO (each timed ``--iters`` times after 5 warm-up runs; all
@@ -138,44 +138,6 @@ def agreement(base_dets: list[list], other_dets: list[list]) -> Agreement:
 # ---------------------------------------------------------------- models
 
 
-def letterbox_rect(frame: np.ndarray, hw: tuple[int, int]):
-    """Like ``detector.letterbox`` but pads to ``h x w`` (``LetterboxMeta`` is shape-agnostic)."""
-    from nab_sentry.ingest.detector import LETTERBOX_PAD, LetterboxMeta
-
-    th, tw = hw
-    h, w = frame.shape[:2]
-    scale = min(tw / w, th / h)
-    nw, nh = min(tw, max(1, round(w * scale))), min(th, max(1, round(h * scale)))
-    resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
-    canvas = np.full((th, tw, 3), LETTERBOX_PAD, dtype=np.uint8)
-    px, py = (tw - nw) // 2, (th - nh) // 2
-    canvas[py:py + nh, px:px + nw] = resized
-    rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
-    tensor = np.ascontiguousarray(rgb.transpose(2, 0, 1)[None], dtype=np.float32) / 255.0
-    return tensor, LetterboxMeta(float(scale), float(px), float(py))
-
-
-class RectDetector:
-    """``OnnxYoloDetector`` with a rectangular letterbox; same session options and postprocess."""
-
-    def __init__(self, path: Path, hw: tuple[int, int], cfg: Config, threads: int) -> None:
-        from nab_sentry.ingest.detector import OnnxYoloDetector
-
-        self._inner = OnnxYoloDetector(path, conf=cfg.det_conf, iou=cfg.det_iou,
-                                       max_det=cfg.det_max_per_frame, input_size=max(hw),
-                                       threads=threads)
-        self.hw = hw
-        self.cfg = cfg
-
-    def detect(self, frame: np.ndarray) -> list:
-        from nab_sentry.ingest.detector import postprocess
-
-        tensor, meta = letterbox_rect(frame, self.hw)
-        out = self._inner._session.run(None, {self._inner._input_name: tensor})
-        return postprocess(out[0], meta, frame.shape[1], frame.shape[0],
-                           self.cfg.det_conf, self.cfg.det_iou, self.cfg.det_max_per_frame)
-
-
 def export_onnx(pt: Path, out_dir: Path, hw: tuple[int, int]) -> Path:
     """Export ``pt`` at ``hw`` into ``out_dir`` (via a copy, so nothing lands in ``models/``)."""
     target = out_dir / f"yolo11n_{size_label(hw)}.onnx"
@@ -195,12 +157,10 @@ def export_onnx(pt: Path, out_dir: Path, hw: tuple[int, int]) -> Path:
 
 
 def make_detector(path: Path, hw: tuple[int, int], cfg: Config, threads: int) -> Any:
-    if hw[0] == hw[1]:
-        from nab_sentry.ingest.detector import OnnxYoloDetector
+    from nab_sentry.ingest.detector import OnnxYoloDetector
 
-        return OnnxYoloDetector(path, conf=cfg.det_conf, iou=cfg.det_iou,
-                                max_det=cfg.det_max_per_frame, input_size=hw[0], threads=threads)
-    return RectDetector(path, hw, cfg, threads)
+    return OnnxYoloDetector(path, conf=cfg.det_conf, iou=cfg.det_iou,
+                            max_det=cfg.det_max_per_frame, input_size=hw, threads=threads)
 
 
 def sample_frames(video: Path, n: int) -> list[np.ndarray]:

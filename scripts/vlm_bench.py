@@ -399,7 +399,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from nab_sentry.config import parse_set_args
     from nab_sentry.ingest.detector import OnnxYoloDetector
-    from nab_sentry.model_files import detector_path
+    from nab_sentry.model_files import detector_input, detector_path
     from nab_sentry.startup import require_models
 
     cfg: Config = load_config(parse_set_args(args.overrides))
@@ -415,7 +415,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: cannot read {args.video}", file=sys.stderr)
         return 1
     detector = OnnxYoloDetector(detector_path(cfg, files), conf=cfg.det_conf, iou=cfg.det_iou,
-                                max_det=cfg.det_max_per_frame, input_size=cfg.det_input_size)
+                                max_det=cfg.det_max_per_frame, input_size=detector_input(cfg),
+                                threads=cfg.det_threads)
 
     print(f"scanning {args.video.name} for person windows ...", flush=True)
     people = scan_people(args.video, detector, count / fps)
