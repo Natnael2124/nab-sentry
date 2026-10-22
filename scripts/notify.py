@@ -53,11 +53,22 @@ def parse_chats(raw: str | None) -> list[int]:
     return chats
 
 
+def vlm_describer(cfg):
+    """The on-demand VLM's describe function, or None until Step 3's VLM module exists."""
+    try:
+        from nab_sentry.describe.vlm import describer_from_config
+    except ImportError:
+        return None
+    return describer_from_config(cfg)
+
+
 def main(argv: Sequence[str] | None = None, *, transport=None, stop: threading.Event | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--cameras", type=Path, default=_ROOT / "config" / "cameras.yaml")
     p.add_argument("--rules", type=Path, default=_ROOT / "config" / "rules.yaml")
     p.add_argument("--set", dest="overrides", action="append", default=[], metavar="NAME=VALUE")
+    p.add_argument("--vlm", action="store_true",
+                   help="enable /describe and verified rules with the local Ollama VLM (Step 3)")
     args = p.parse_args(argv)
 
     token = os.environ.get("NAB_TELEGRAM_TOKEN", "").strip()
@@ -90,7 +101,20 @@ def main(argv: Sequence[str] | None = None, *, transport=None, stop: threading.E
         client = TelegramClient(transport or HttpxTransport(token))
         outbox = Outbox(cfg, db, client, chats, camera_labels=labels,
                         segment_s=lambda cam: cam_info.get(cam, ("", 10.0))[1])
-        commands = Commands(db, labels, rules, live_dir=cfg.live_dir, offline_after_s=health.offline_after_s)
+        from nab_sentry.notify.search import TodaySearch
+
+        def load_encoder():
+            from nab_sentry.model_files import default_encoder_factory
+            from nab_sentry.startup import verify_manifest
+
+            manifest = verify_manifest(cfg.models_dir)
+            if manifest.failures:
+                raise RuntimeError("models are not provisioned (run scripts\fetch_models.py)")
+            return default_encoder_factory(cfg, manifest.files)
+
+        commands = Commands(db, labels, rules, live_dir=cfg.live_dir, offline_after_s=health.offline_after_s,
+                            thumbs_dir=cfg.thumbs_dir, searcher=TodaySearch(cfg, db, load_encoder),
+                            describer=vlm_describer(cfg) if args.vlm else None)
         notifier = Notifier(db, client, chats, commands, outbox, camera_labels=labels,
                             health=health.check)
         log.info("notifier started for %d chat(s), %d camera(s), %d rule(s)", len(chats), len(cam_info), len(rules))

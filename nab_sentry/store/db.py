@@ -705,6 +705,12 @@ class MetadataStore:
                 (camera_id, int(to_epoch_ms), int(from_epoch_ms))).fetchall()
         return [(r[0], int(r[1]), float(r[2])) for r in rows]
 
+    def video_start_ms(self, video_id: int) -> int | None:
+        with self._lock:
+            row = self._conn.execute("SELECT start_epoch_ms FROM videos WHERE video_id = ?",
+                                     (int(video_id),)).fetchone()
+        return None if row is None else int(row[0])
+
     def latest_video(self, camera_id: str) -> tuple[str, int, float] | None:
         """(src_path, start_epoch_ms, duration_s) of the camera's newest complete video."""
         with self._lock:

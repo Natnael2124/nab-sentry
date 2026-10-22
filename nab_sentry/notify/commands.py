@@ -9,6 +9,9 @@ Grammar (``/name@botname`` is accepted, names are case-insensitive)::
     /snapshot [CAMERA_ID]         a recent frame (the newest stored Segment)
     /mute RULE_ID [MINUTES]       default 60, 1..10080 (a week)
     /unmute RULE_ID
+    /today [CAMERA_ID]            today's activity log (Step 3)
+    /ask WORDS                    best match of a text search over today's footage
+    /describe ACTIVITY_ID         a description by the on-demand VLM (slow: about a minute)
 
 :func:`parse_command` is pure; anything else (or bad arguments) gives a :class:`Command` with an
 ``error`` that the bot answers with a short usage line.
@@ -27,12 +30,15 @@ from nab_sentry.ingest.transcode import ffmpeg_exe
 from nab_sentry.rules.config import Rule
 from nab_sentry.store.db import MetadataStore
 
-NAMES = ("start", "help", "status", "alerts", "rules", "snapshot", "mute", "unmute")
+NAMES = ("start", "help", "status", "alerts", "rules", "snapshot", "mute", "unmute", "today", "ask",
+         "describe")
+ASK_MAX_LEN = 200
 ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 MUTE_DEFAULT_MIN, MUTE_MAX_MIN = 60, 7 * 24 * 60
 USAGE = {
     "status": "/status", "alerts": "/alerts", "rules": "/rules", "snapshot": "/snapshot [CAMERA]",
     "mute": "/mute RULE [MINUTES]", "unmute": "/unmute RULE", "help": "/help", "start": "/start",
+    "today": "/today [CAMERA]", "ask": "/ask WORDS", "describe": "/describe ACTIVITY_NUMBER",
 }
 HELP = ("NAB Sentry\n"
         "/status - cameras and alerts waiting\n"
@@ -41,6 +47,9 @@ HELP = ("NAB Sentry\n"
         "/snapshot [camera] - latest picture\n"
         "/mute rule [minutes] - pause a rule (default 60)\n"
         "/unmute rule - resume it\n"
+        "/today [camera] - today's activity log\n"
+        "/ask words - find it in today's footage\n"
+        "/describe number - describe an activity in words (about a minute)\n"
         "Alerts have buttons to mark them real or a false alarm.")
 
 
@@ -64,7 +73,16 @@ def parse_command(text: str) -> Command | None:
         return Command("help", (), f"unknown command /{name}")
     if name in ("start", "help", "status", "alerts", "rules"):
         return Command(name) if not args else Command(name, (), f"usage: {USAGE[name]}")
-    if name == "snapshot":
+    if name == "ask":
+        words = " ".join(args).strip()
+        if not words or len(words) > ASK_MAX_LEN:
+            return Command(name, (), f"usage: {USAGE[name]} (1-{ASK_MAX_LEN} characters)")
+        return Command(name, (words,))
+    if name == "describe":
+        if len(args) != 1 or not args[0].lstrip("#").isdigit():
+            return Command(name, (), f"usage: {USAGE[name]}")
+        return Command(name, (args[0].lstrip("#"),))
+    if name in ("snapshot", "today"):
         if len(args) > 1 or (args and not ID_RE.fullmatch(args[0])):
             return Command(name, (), f"usage: {USAGE[name]}")
         return Command(name, args)
@@ -103,13 +121,21 @@ def grab_last_frame(video: Path, out: Path) -> Path:
 class Commands:
     def __init__(self, db: MetadataStore, cameras: dict[str, str], rules: Sequence[Rule], *,
                  live_dir: Path, offline_after_s: Callable[[str], float],
-                 frame_grabber: Callable[[Path, Path], Path] = grab_last_frame) -> None:
+                 frame_grabber: Callable[[Path, Path], Path] = grab_last_frame,
+                 thumbs_dir: Path | None = None,
+                 searcher: Callable[[str, float, float], list[dict]] | None = None,
+                 describer: Callable[[dict], str] | None = None) -> None:
+        """``searcher(words, from_s, to_s)`` -> hits ``{camera_id, start_s, thumb_path}`` best
+        first; ``describer(activity)`` -> text (the on-demand VLM). Both optional."""
         self.db = db
         self.cameras = cameras  # camera_id -> label
         self.rules = {r.id: r for r in rules}
         self.live_dir = live_dir
         self.offline_after_s = offline_after_s
         self.grab = frame_grabber
+        self.thumbs_dir = thumbs_dir
+        self.searcher = searcher
+        self.describer = describer
 
     def handle(self, cmd: Command, now_s: float) -> Reply:
         if cmd.error is not None:
@@ -132,16 +158,16 @@ class Commands:
             state = "OFFLINE" if age > self.offline_after_s(cam) else "ok"
             lines.append(f"• {label} ({cam}): {state}, last footage {_ago(age)} ago")
         waiting = len(self.db.due_alerts(2**62, 1000))
-        failed = sum(1 for a in self._today(now_s) if a["state"] == "failed")
+        failed = sum(1 for a in self._alerts_today(now_s) if a["state"] == "failed")
         lines.append(f"Alerts waiting to be sent: {waiting}" + (f"; failed today: {failed}" if failed else ""))
         return Reply("\n".join(lines))
 
-    def _today(self, now_s: float) -> list[dict]:
+    def _alerts_today(self, now_s: float) -> list[dict]:
         midnight = datetime.fromtimestamp(now_s).replace(hour=0, minute=0, second=0, microsecond=0)
         return self.db.alerts_between(round(midnight.timestamp() * 1000), round(now_s * 1000) + 1)
 
     def _alerts(self, args, now_s) -> Reply:
-        rows = self._today(now_s)
+        rows = self._alerts_today(now_s)
         if not rows:
             return Reply("No alerts today.")
         lines = [f"Alerts today ({len(rows)}):"]
@@ -191,6 +217,60 @@ class Commands:
         until = datetime.fromtimestamp(now_s) + timedelta(minutes=minutes)
         self.db.set_mute(rid, round(until.timestamp() * 1000))
         return Reply(f"Muted {rid} until {until:%H:%M} ({minutes} min). Alerts are still recorded.")
+
+    def _midnight(self, now_s: float) -> float:
+        return datetime.fromtimestamp(now_s).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+    def _today(self, args, now_s) -> Reply:
+        cam = args[0] if args else None
+        if cam is not None and cam not in self.cameras:
+            return Reply(f"Unknown camera {cam}. Cameras: {', '.join(sorted(self.cameras))}")
+        rows = self.db.activities_between(round(self._midnight(now_s) * 1000), round(now_s * 1000) + 1, cam)
+        if not rows:
+            return Reply("Nothing recorded today yet.")
+        lines = [f"Today ({len(rows)}):"]
+        for a in rows[-30:]:
+            lines.append(f"#{a['activity_id']} {a['summary']}")
+        if len(rows) > 30:
+            lines.insert(1, f"(last 30 of {len(rows)})")
+        lines.append("/describe NUMBER for a description in words")
+        return Reply("\n".join(lines))
+
+    def _ask(self, args, now_s) -> Reply:
+        if self.searcher is None:
+            return Reply("Search is not available here.")
+        hits = self.searcher(args[0], self._midnight(now_s), now_s)
+        if not hits:
+            return Reply(f"Nothing like \"{args[0]}\" today.")
+        best = hits[0]
+        label = self.cameras.get(best["camera_id"], best["camera_id"])
+        when = datetime.fromtimestamp(best["start_s"]).strftime("%H:%M:%S")
+        acts = [a for a in self.db.activities_between(round((best["start_s"] - 60) * 1000),
+                                                     round((best["start_s"] + 60) * 1000), best["camera_id"])]
+        near = min(acts, key=lambda a: abs(a["first_epoch_ms"] / 1000 - best["start_s"])) if acts else None
+        text = f"Best match for \"{args[0]}\": {label} at {when}"
+        if near is not None:
+            text += f"\n#{near['activity_id']} {near['summary']}"
+        if len(hits) > 1:
+            more = ", ".join(datetime.fromtimestamp(h["start_s"]).strftime("%H:%M") for h in hits[1:4])
+            text += f"\nAlso: {more}"
+        photo = self.thumbs_dir / best["thumb_path"] if self.thumbs_dir and best.get("thumb_path") else None
+        return Reply(text, photo=photo if photo is not None and photo.is_file() else None)
+
+    def _describe(self, args, now_s) -> Reply:
+        a = self.db.get_activity(int(args[0]))
+        if a is None:
+            return Reply(f"No activity #{args[0]}.")
+        if a.get("vlm_text"):
+            return Reply(f"#{a['activity_id']} {a['vlm_text']}")
+        if self.describer is None:
+            return Reply("Descriptions are not available here (the on-demand VLM is off).")
+        try:
+            text = self.describer(a).strip()
+        except Exception as exc:  # noqa: BLE001
+            return Reply(f"Could not describe #{a['activity_id']}: {exc}")
+        self.db.set_activity_vlm(a["activity_id"], text)
+        return Reply(f"#{a['activity_id']} {text}")
 
     def _unmute(self, args, now_s) -> Reply:
         rid = args[0]
