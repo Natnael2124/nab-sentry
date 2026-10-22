@@ -157,9 +157,10 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
 ### Phase B3: Zones, rules, outbox
 
 - [ ] 12. Geometry
-  - [ ] 12.1 Implement `nab_sentry/rules/geometry.py` (`anchor`, `point_in_polygon`, `segment_cross`)
+  - [x] 12.1 Implement `nab_sentry/rules/geometry.py` (`anchor`, `point_in_polygon`, `side`, `crossing`)
+    - Line direction: crossing to the left of the arrow `a -> b` as seen on screen is `+1` ("in"). `crossing` needs both endpoints strictly off the line; the rule engine passes the last off-line position so pausing on the line still counts
     - _Requirements: 12.1, 12.2_
-  - [ ] 12.2 Property tests (Properties 13, 14)
+  - [x] 12.2 Property tests (Properties 13, 14): point-in-polygon matches OpenCV on random star-shaped (often non-convex) polygons; reversing a movement negates the crossing; a crossing's intersection lies within both segments
     - File: `tests/test_geometry.py`
 
 - [ ] 13. Rules
