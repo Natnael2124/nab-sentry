@@ -228,6 +228,19 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
     - _Requirements: 17.3_
   - [ ] 17.4 Record results in the README; go/no-go for a site pilot
 
+### Phase C: Step 3 - activity log and on-demand VLM
+
+- [ ] 18. Activity log
+  - [x] 18.1 `nab_sentry/describe/attributes.py`: prompt groups, softmax scoring, confidence-weighted vote (ties and weak winners give no tag), phrases (task 4.5)
+  - [ ] 18.2 Schema v4: `activities` table; written by the pipeline when a confirmed Track ends (zones with dwell, crossings, tags, best crop, summary); deleted by retention
+  - [ ] 18.3 Measure tag accuracy per group on the scene and the Compilation_Video with per-track voting; switch off groups below 70% (Requirement 4A.3)
+  - [ ] 18.4 Telegram `/today`, `/ask`; API `/api/activities`; Console list
+- [ ] 19. On-demand VLM
+  - [ ] 19.1 `nab_sentry/describe/vlm.py`: Ollama client (loopback only), storyboard of a Track's crops, timeout, sanity check reused from `vlm_bench.py`
+  - [ ] 19.2 `/describe ACTIVITY_ID` with caching
+  - [ ] 19.3 Rules with `verify:` question; Notifier verification step (`dismissed` state, schema), never suppressing on VLM failure
+  - [ ] 19.4 Tests with a fake VLM; one slow test against the real Ollama model when it is installed
+
 ## Notes
 
 - Tasks marked **(Integrator)** need a human: labelling, recording footage, Telegram bot creation (`@BotFather`) and chat IDs.

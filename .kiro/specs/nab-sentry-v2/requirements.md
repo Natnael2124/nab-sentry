@@ -255,3 +255,33 @@ V1 glossary terms (Ingest_Pipeline, Sampler, Motion_Gate, Detector, Embedder, Me
 1. The V1 offline isolation and write-location tests SHALL continue to pass for ingest (including watch mode) and the API_Server.
 2. A test SHALL show that the Notifier, using a fake transport, contacts only `api.telegram.org` and writes only under `data/`.
 3. All new processes SHALL write only under `data/`, `models/` and read `config/`.
+
+
+## Phase C: Step 3 - activity log and on-demand VLM (added 2026-10-23)
+
+Decided after Step 1 (see the Step 3 direction above): the log is built without a VLM; Qwen3-VL 2B Instruct (about 40 s per image on the Target_Hardware) runs only on demand.
+
+### Requirement 19: Activity log
+
+**User Story:** As a business owner, I want a readable list of what happened today on each camera, without watching footage.
+
+#### Acceptance Criteria
+
+1. WHEN a confirmed Track ends (or its video is the last of a run), THE Ingest_Pipeline SHALL write one `activities` row in the same transaction: camera, class, first and last time, zones visited with the time spent in each, line crossings with direction, attribute tags, the best crop (frame and box) and a one-line summary.
+2. The summary SHALL be built from a template, e.g. `20:02 · Back yard · person in a red top · on the lawn 14 s, crossed the path (in)`, using only tags that passed the vote.
+3. Attribute tags SHALL come from the Track's crop embeddings (Requirement 4A) by a confidence-weighted vote; a tie or a weak winner gives no tag.
+4. Activities SHALL be deleted with their camera's footage by retention and SHALL survive a rollback-free restart unchanged.
+
+### Requirement 20: Activity on Telegram and in the console
+
+1. `/today [CAMERA]` SHALL list today's activities (newest last, at most 30, with how many more).
+2. `/ask WORDS` SHALL run the V1 text search over today's footage and reply with the best match's thumbnail and its activity summary (no language model).
+3. `/describe ACTIVITY_ID` SHALL ask the on-demand VLM to describe the activity from a 2x2 storyboard of its crops, reply with the text, and cache it on the activity.
+4. The API_Server SHALL expose today's activities (`/api/activities?date=`), and the Console SHALL show them as a list linked to playback.
+
+### Requirement 21: Verified rules
+
+1. A Rule MAY carry `verify: "<yes/no question>"` (with `severity: verify`). Before the Notifier delivers its Alert, it SHALL ask the VLM the question about the alert snapshot (temperature 0, answer parsed as yes/no).
+2. WHEN the answer is no, the Alert SHALL become `dismissed` with the VLM's answer in `note`, and SHALL NOT be sent.
+3. WHEN the VLM is unavailable, fails, or does not answer within `vlm_timeout_s`, the Alert SHALL be sent with the note "(not verified: ...)". A broken VLM must never suppress a real alert.
+4. Verification SHALL run outside the ingest path (in the Notifier), one call at a time.
