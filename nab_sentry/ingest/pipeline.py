@@ -28,7 +28,7 @@ also gets for free); :meth:`IngestPipeline.reconcile` repairs that state on the 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -36,12 +36,12 @@ from typing import Any, Literal
 
 import numpy as np
 
-from nab_sentry.config import Config
+from nab_sentry.config import Config, effective_track_rate
 from nab_sentry.embed.clip_encoder import EmbeddingError, Encoder
 from nab_sentry.ingest.detector import Detection, Detector, clamp_box
 from nab_sentry.ingest.metadata import resolve_metadata, src_hash, to_aware_local
 from nab_sentry.ingest.motion import GateDecision, MotionGate
-from nab_sentry.ingest.sampler import Sampler
+from nab_sentry.ingest.sampler import DualSampler, Sampler
 from nab_sentry.ingest.sources import (
     FileSource,
     UnknownFrameRate,
@@ -50,8 +50,10 @@ from nab_sentry.ingest.sources import (
 )
 from nab_sentry.ingest.transcode import PlaybackJob, default_playback, part_path, write_thumbnail
 from nab_sentry.logging_setup import get_logger
-from nab_sentry.store.db import MetadataStore, NewFrame, NewVector, NewVideo
+from nab_sentry.store.db import MetadataStore, NewFrame, NewTrackObs, NewVector, NewVideo
 from nab_sentry.store.vector_index import VectorIndex
+from nab_sentry.track import TrackSink
+from nab_sentry.track.bytetrack import TrackRecord
 
 log = get_logger("ingest")
 
@@ -204,6 +206,7 @@ class _Pending:
     image: np.ndarray
     detection: Detection | None  # None -> kind 'frame'
     box: tuple[int, int, int, int] | None = None
+    track_key: int | None = None  # tracker key of the detection (V2), linked after end_video
 
 
 @dataclass
@@ -218,6 +221,10 @@ class _VideoState:
     index_touched: bool = False
     index_saved: bool = False
     job_killed: bool = False
+    tracking: bool = False  # TrackSink.begin_video ran for this video (rollback must undo it)
+    camera_id: str | None = None
+    track_ids_before: dict[int, int] | None = None  # camera's key -> track_id map at the start
+    crop_keys: list[tuple[int, int]] = field(default_factory=list)  # (vector_id, track key)
 
 
 class IngestPipeline:
@@ -232,12 +239,17 @@ class IngestPipeline:
         start_playback: Callable[[Path, Path], PlaybackJob] | None = None,
         *,
         checkpoint: Checkpoint | None = None,
+        tracker: TrackSink | None = None,
     ) -> None:
         self.cfg = cfg
         self.db = db
         self.index = index
         self.encoder = encoder
         self.detector = detector
+        self.tracker = tracker  # None: exactly V1 (sample rate only, no extra detector runs)
+        # camera_id -> {tracker key -> tracks.track_id} for tracks already in the store; tracks
+        # continuing into the next Segment extend their row instead of starting a new one.
+        self._track_ids: dict[str, dict[int, int]] = {}
         self.open_source = open_source
         self.start_playback = start_playback or (
             lambda src, dst: default_playback(src, dst, cfg.playback_max_width)
@@ -375,22 +387,53 @@ class IngestPipeline:
         self._check("playback_start", path)
 
         # 5. sample, gate, frames rows, thumbnails, detector, batched embedding.
-        sampler = Sampler(cfg.sample_rate)
+        #    With a TrackSink (V2 9.2) frames are also taken at the tracking rate; the gate
+        #    and everything V1 stores still use only the sample-rate frames (``on_sample``).
+        detector = self._active_detector
+        tracker = self.tracker if detector is not None else None
+        sampler: Sampler | DualSampler
+        if tracker is not None:
+            sampler = DualSampler(cfg.sample_rate, effective_track_rate(cfg))
+            selected: Iterable[tuple[Any, bool]] = sampler.select(source.frames())
+        else:
+            sampler = Sampler(cfg.sample_rate)
+            selected = ((f, True) for f in sampler.select(source.frames()))
         gate = MotionGate(
             cfg.motion_threshold, cfg.keyframe_interval_s, cfg.gate_width,
             cfg.motion_pixel_delta, cfg.motion_method,  # type: ignore[arg-type]
         )
         gate.reset()
-        detector = self._active_detector
+        if tracker is not None:
+            st.camera_id = meta.camera_id
+            st.track_ids_before = dict(self._track_ids.get(meta.camera_id, {}))
+            tracker.begin_video(meta.camera_id, to_aware_local(meta.start_time).timestamp(), video_id)
+            st.tracking = True
         queue: list[_Pending] = []
         batch = int(cfg.batch_size)
         passed = 0
+        last_motion = False  # the last sample-rate frame showed motion (fraction >= threshold)
 
-        for frame in sampler.select(source.frames()):
+        for frame, on_sample in selected:
             self._check("frame", path)
+            if not on_sample:
+                # Tracking-rate frame between sample-rate frames: detect only while the
+                # scene is active - the last sample-rate frame showed motion (its changed
+                # fraction, whatever the gate's label: a keyframe can carry motion too), or
+                # a track is alive. A still keyframe or the first frame starts nothing.
+                if tracker is not None and (last_motion or tracker.active):
+                    tracker.update(frame, self._run_detector(detector, path, frame.offset_s,
+                                                             frame.image))
+                continue
             decision = gate.evaluate(frame)
+            last_motion = decision.passed and decision.reason != "first" and (
+                decision.fraction >= cfg.motion_threshold)
             if not decision.passed:
-                continue  # static / empty: no row, no thumbnail, no embedding (3.7, 3.9)
+                # static / empty: no row, no thumbnail, no embedding (3.7, 3.9); a live track
+                # keeps the detector running so a person standing still is not lost.
+                if tracker is not None and tracker.active and frame.image.size:
+                    tracker.update(frame, self._run_detector(detector, path, frame.offset_s,
+                                                             frame.image))
+                continue
             passed += 1
             image = frame.image
             name = thumb_name(video_id, frame.index)
@@ -404,9 +447,13 @@ class IngestPipeline:
             write_thumbnail(image, thumb, cfg.thumb_width)
 
             queue.append(_Pending(frame_id, image, None))
-            for det, box in self._detect(detector, path, frame.offset_s, image):
+            dets = self._run_detector(detector, path, frame.offset_s, image)
+            keys: dict[int, int | None] = {}
+            if tracker is not None:
+                keys = {id(d): k for d, k in zip(dets, tracker.update(frame, dets) or ())}
+            for det, box in self._crops(dets, image):
                 x1, y1, x2, y2 = box
-                queue.append(_Pending(frame_id, image[y1:y2, x1:x2], det, box))
+                queue.append(_Pending(frame_id, image[y1:y2, x1:x2], det, box, keys.get(id(det))))
             while len(queue) >= batch:
                 self._flush(path, queue[:batch], st)
                 del queue[:batch]
@@ -419,6 +466,11 @@ class IngestPipeline:
         counts["passed"] = passed
         if passed == 0:
             raise UnreadableVideo(f"no frames passed the motion gate: {path}")
+        if tracker is not None:
+            # Inside the transaction: a failure later on rolls the rows and the tracker back.
+            records = tracker.end_video(to_aware_local(meta.start_time).timestamp()
+                                        + float(source.decoded_index_count) / fps)
+            self._store_tracks(meta.camera_id, records, st)
 
         # 7. playback file, then finalize the videos row (3.6, 6.5).
         self._check("playback_wait", path)
@@ -448,20 +500,39 @@ class IngestPipeline:
     def _detect(
         self, detector: Detector | None, path: Path, offset_s: float, image: np.ndarray
     ) -> list[tuple[Detection, tuple[int, int, int, int]]]:
-        """Kept detections with clamped boxes; inference errors -> warning, none (4.7, 4.8, 5.10)."""
+        """High detections with clamped boxes; inference errors -> warning, none (4.7, 4.8, 5.10)."""
+        return self._crops(self._run_detector(detector, path, offset_s, image), image)
+
+    @staticmethod
+    def _run_detector(
+        detector: Detector | None, path: Path, offset_s: float, image: np.ndarray
+    ) -> list[Detection]:
+        """All detections (high and low); inference errors -> warning, none (4.7, 4.8)."""
         if detector is None:
             return []
         try:
-            dets = list(detector.detect(image))
+            return list(detector.detect(image))
         except Exception as exc:
             log.warning(
                 "detector failed: %s at offset %.3f s: %s; storing frame with zero detections",
                 path, offset_s, exc,
             )
             return []
+
+    @staticmethod
+    def _crops(
+        dets: list[Detection], image: np.ndarray
+    ) -> list[tuple[Detection, tuple[int, int, int, int]]]:
+        """High detections with clamped boxes (5.10).
+
+        Low detections (``Detection.high`` false, V2 Requirement 9.1) are dropped here: only
+        high ones get crops and embeddings, so search results equal V1's.
+        """
         h, w = image.shape[:2]
         out: list[tuple[Detection, tuple[int, int, int, int]]] = []
         for det in dets:
+            if not det.high:
+                continue
             box = clamp_box(*det.box, w, h)
             if box is None:
                 continue  # crop smaller than 1 px: no crop embedding (5.10)
@@ -488,8 +559,37 @@ class IngestPipeline:
                     frame_id=it.frame_id, kind="crop", det_class=it.detection.cls,
                     det_conf=float(it.detection.conf), box=it.box,
                 )
-            st.staged_ids.append(self.db.insert_vector(nv))
+            vector_id = self.db.insert_vector(nv)
+            st.staged_ids.append(vector_id)
             st.staged_vecs.append(vec)
+            if it.track_key is not None:
+                st.crop_keys.append((vector_id, it.track_key))
+
+    def _store_tracks(self, camera_id: str, records: Sequence[TrackRecord], st: _VideoState) -> None:
+        """Write drained track records (V2 Requirement 10.7): a new ``tracks`` row per new
+        confirmed track, ``extend_track`` for one continuing from an earlier Segment, one
+        ``track_obs`` row per observation (tagged with its own video, which for back-filled
+        observations can be the previous Segment), then ``vectors.track_id`` for this video's
+        crops of confirmed tracks. A crop of a track confirmed only in a later Segment stays
+        unlinked."""
+        ids = self._track_ids.setdefault(camera_id, {})
+        for rec in records:
+            obs = [NewTrackObs(o.tag[0], o.tag[1], round(o.t * 1000), o.conf, o.high, o.box)
+                   for o in rec.observations if isinstance(o.tag, tuple) and o.tag[0] is not None]
+            if obs:
+                last_ms = max(o.abs_epoch_ms for o in obs)
+                if rec.key in ids:
+                    self.db.extend_track(ids[rec.key], last_ms, len(obs))
+                else:
+                    ids[rec.key] = self.db.insert_track(
+                        camera_id, rec.cls, min(o.abs_epoch_ms for o in obs), last_ms, len(obs))
+                self.db.insert_track_obs(ids[rec.key], obs)
+        links = [(v, ids[k]) for v, k in st.crop_keys if k in ids]
+        if links:
+            self.db.link_vectors(links)
+        for rec in records:
+            if rec.ended:
+                ids.pop(rec.key, None)  # no more observations will come for it
 
     # -- compensation --------------------------------------------------------------------------
 
@@ -503,8 +603,16 @@ class IngestPipeline:
             log.warning("could not stop playback job", exc_info=True)
 
     def _rollback(self, path: Path, exc: BaseException, st: _VideoState) -> None:
-        """kill ffmpeg -> ROLLBACK -> index remove (+ save) -> delete files -> log (6.8, 7.7)."""
+        """kill ffmpeg -> ROLLBACK -> index remove (+ save) -> delete files -> log (6.8, 7.7);
+        the TrackSink is rolled back to its state before this video (V2 Requirement 10.6)."""
         self._kill_job(st)
+        if st.tracking and self.tracker is not None:
+            try:
+                self.tracker.rollback_video()
+            except Exception:
+                log.error("track rollback failed for %s", path, exc_info=True)
+            if st.camera_id is not None and st.track_ids_before is not None:
+                self._track_ids[st.camera_id] = st.track_ids_before
         try:
             self.db.rollback()  # no-op unless a failed COMMIT left the transaction open
         except Exception:
@@ -583,6 +691,10 @@ class IngestPipeline:
                 if f.is_file() and pattern.match(f.name) and f.name not in referenced:
                     if _unlink(f):
                         deleted_files.append(f.name)
+
+        empty_tracks = self.db.delete_empty_tracks()  # their videos were deleted (V2 11.3)
+        if empty_tracks:
+            log.warning("reconcile: deleted %d tracks without observations", empty_tracks)
 
         if index_changed:
             self.index.save(cfg.index_path)

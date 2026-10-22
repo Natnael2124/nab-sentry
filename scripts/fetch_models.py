@@ -2,7 +2,7 @@
 
 Usage::
 
-    venv\\Scripts\\python.exe scripts\\fetch_models.py [--models-dir models]
+    venv\\Scripts\\python.exe scripts\\fetch_models.py [--models-dir models] [--export-only]
 
 Steps (Requirements 13.1, 13.2, 13.8):
 
@@ -10,9 +10,14 @@ Steps (Requirements 13.1, 13.2, 13.8):
 2. Download ``open_clip_pytorch_model.bin`` (OpenCLIP ViT-B/32 ``laion2b_s34b_b79k``) with
    ``huggingface_hub.hf_hub_download`` and ``yolo11n.pt`` via Ultralytics, each with up to
    3 attempts and exponential backoff.
-3. Export YOLO11n to ``models/yolo11n.onnx`` (``imgsz=640, dynamic=False, nms=False``).
-4. Smoke-load both runtime model files from their local paths (network disabled).
+3. Export YOLO11n once per input shape in ``DETECTOR_SHAPES`` (``dynamic=False, nms=False``):
+   ``models/yolo11n.onnx`` (640 x 640) and ``models/yolo11n_384x640.onnx`` (V2 task 9.0).
+4. Smoke-load every runtime model file from its local path (network disabled); each detector
+   export must have a static ``(1, 3, h, w)`` input and the matching ``(1, 84, anchors)`` output.
 5. Write ``manifest.json.tmp`` and rename it to ``manifest.json``.
+
+``--export-only`` skips step 2 and re-exports from the ``yolo11n.pt`` and OpenCLIP weights
+already in ``models/``, so an offline machine can add new detector shapes.
 
 Any failure prints a message naming the failing file and exits 1 with no manifest.
 The downloader, exporter, smoke loader and sleep function are injectable so tests can
@@ -40,6 +45,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from nab_sentry.model_files import DETECTOR_SHAPES, detector_rel  # noqa: E402  (stdlib-only)
 from nab_sentry.startup import MANIFEST_NAME, sha256_file  # noqa: E402  (stdlib-only module)
 
 DEFAULT_MODELS_DIR = _ROOT / "models"
@@ -48,7 +54,8 @@ CLIP_REPO_ID = "laion/CLIP-ViT-B-32-laion2B-s34B-b79K"
 CLIP_FILENAME = "open_clip_pytorch_model.bin"
 CLIP_REL = f"open_clip/ViT-B-32-laion2b_s34b_b79k/{CLIP_FILENAME}"
 YOLO_PT_REL = "yolo11n.pt"
-YOLO_ONNX_REL = "yolo11n.onnx"
+YOLO_ONNX_REL = "yolo11n.onnx"  # the 640 x 640 export
+YOLO_ONNX_RELS = tuple(detector_rel(h, w) for h, w in DETECTOR_SHAPES)
 
 ROLE_EMBEDDER = "embedder"
 ROLE_DETECTOR = "detector"
@@ -62,7 +69,7 @@ EXIT_FAIL = 1
 
 # Callable signatures
 Downloader = Callable[[str, Path], Path]  # (relative path under models/, models_dir) -> local path
-Exporter = Callable[[Path, Path], Path]  # (yolo11n.pt path, target onnx path) -> onnx path
+Exporter = Callable[[Path, Path, tuple[int, int]], Path]  # (yolo11n.pt, target onnx, (h, w)) -> onnx
 SmokeLoader = Callable[[str, Path], None]  # (role, absolute path) -> raises on failure
 
 _OFFLINE_VARS = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE")
@@ -132,17 +139,33 @@ def default_downloader(rel: str, models_dir: Path) -> Path:
     raise FetchError(rel, "no download source configured")
 
 
-def default_exporter(pt_path: Path, onnx_path: Path) -> Path:
-    """Export YOLO11n to ONNX with a fixed 640x640 input and no NMS in the graph."""
+def default_exporter(pt_path: Path, onnx_path: Path, hw: tuple[int, int]) -> Path:
+    """Export YOLO11n to ONNX with a fixed ``hw`` input and no NMS in the graph.
+
+    Ultralytics writes the export next to the ``.pt`` file, so it runs on a copy in a scratch
+    folder: two shapes exported in a row would otherwise overwrite each other's output.
+    """
     from ultralytics import YOLO  # Model_Fetcher only
 
-    with _network_enabled():  # Ultralytics may auto-install the `onnx` package
-        out = YOLO(str(pt_path)).export(format="onnx", imgsz=640, dynamic=False, nms=False)
-    out_path = Path(out)
-    if out_path.resolve() != Path(onnx_path).resolve():
+    work = Path(onnx_path).parent / f".export_{hw[0]}x{hw[1]}"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        local_pt = work / Path(pt_path).name
+        shutil.copy2(pt_path, local_pt)
+        imgsz = hw[0] if hw[0] == hw[1] else list(hw)
+        with _network_enabled():  # Ultralytics may auto-install the `onnx` package
+            out = YOLO(str(local_pt)).export(format="onnx", imgsz=imgsz, dynamic=False, nms=False)
+        out_path = Path(out)
         Path(onnx_path).parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(out_path), str(onnx_path))
+        os.replace(out_path, onnx_path)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
     return Path(onnx_path)
+
+
+def anchors(h: int, w: int) -> int:
+    """YOLO11 output anchors for an ``h`` x ``w`` input (strides 8, 16, 32)."""
+    return sum((h // s) * (w // s) for s in (8, 16, 32))
 
 
 def default_smoke_loader(role: str, path: Path) -> None:
@@ -165,11 +188,13 @@ def default_smoke_loader(role: str, path: Path) -> None:
 
         sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
         inp = sess.get_inputs()[0]
-        if list(inp.shape) != [1, 3, 640, 640]:
+        shape = list(inp.shape)
+        if len(shape) != 4 or shape[:2] != [1, 3] or not all(isinstance(d, int) for d in shape[2:]):
             raise RuntimeError(f"unexpected ONNX input shape {inp.shape}")
-        (out,) = sess.run(None, {inp.name: np.zeros((1, 3, 640, 640), dtype=np.float32)})
-        if out.shape != (1, 84, 8400):
-            raise RuntimeError(f"unexpected ONNX output shape {out.shape}")
+        h, w = shape[2], shape[3]
+        (out,) = sess.run(None, {inp.name: np.zeros((1, 3, h, w), dtype=np.float32)})
+        if out.shape != (1, 84, anchors(h, w)):
+            raise RuntimeError(f"unexpected ONNX output shape {out.shape} for a {h}x{w} input")
     else:
         raise ValueError(f"unknown role {role!r}")
 
@@ -233,6 +258,8 @@ def fetch(
     smoke_loader: SmokeLoader = default_smoke_loader,
     sleep: Callable[[float], None] = time.sleep,
     log: Callable[[str], None] = print,
+    *,
+    export_only: bool = False,
 ) -> Path:
     """Provision all model files and write the manifest. Raises FetchError on failure."""
     models_dir = Path(models_dir)
@@ -240,19 +267,24 @@ def fetch(
     _remove_manifest(models_dir)
 
     for rel in (CLIP_REL, YOLO_PT_REL):
+        if export_only:
+            if not (models_dir / rel).is_file():
+                raise FetchError(rel, "missing; run without --export-only on a connected machine")
+            continue
         log(f"downloading {rel} ...")
         _with_retries(rel, downloader, models_dir, sleep, log)
 
-    log(f"exporting {YOLO_ONNX_REL} ...")
-    onnx_target = models_dir / YOLO_ONNX_REL
-    try:
-        out = Path(exporter(models_dir / YOLO_PT_REL, onnx_target))
-        if out.resolve() != onnx_target.resolve() or not onnx_target.is_file():
-            raise RuntimeError("export produced no file at the expected path")
-    except Exception as exc:  # noqa: BLE001
-        raise FetchError(YOLO_ONNX_REL, f"ONNX export failed: {exc}") from exc
+    for hw, rel in zip(DETECTOR_SHAPES, YOLO_ONNX_RELS):
+        log(f"exporting {rel} ...")
+        onnx_target = models_dir / rel
+        try:
+            out = Path(exporter(models_dir / YOLO_PT_REL, onnx_target, hw))
+            if out.resolve() != onnx_target.resolve() or not onnx_target.is_file():
+                raise RuntimeError("export produced no file at the expected path")
+        except Exception as exc:  # noqa: BLE001
+            raise FetchError(rel, f"ONNX export failed: {exc}") from exc
 
-    runtime_files = [(ROLE_EMBEDDER, CLIP_REL), (ROLE_DETECTOR, YOLO_ONNX_REL)]
+    runtime_files = [(ROLE_EMBEDDER, CLIP_REL)] + [(ROLE_DETECTOR, rel) for rel in YOLO_ONNX_RELS]
     for role, rel in runtime_files:
         log(f"smoke-loading {rel} ...")
         try:
@@ -279,11 +311,13 @@ def main(
     """CLI entry point. Returns 0 on success, 1 on any failure (no manifest left behind)."""
     parser = argparse.ArgumentParser(description="Download NAB Sentry model files into models/.")
     parser.add_argument("--models-dir", type=Path, default=None, help="target directory (default: models/)")
+    parser.add_argument("--export-only", action="store_true",
+                        help="no downloads: re-export ONNX from the weights already in models/")
     args = parser.parse_args(list(argv) if argv is not None else None)
     target = Path(models_dir or args.models_dir or DEFAULT_MODELS_DIR)
 
     try:
-        manifest = fetch(target, downloader, exporter, smoke_loader, sleep)
+        manifest = fetch(target, downloader, exporter, smoke_loader, sleep, export_only=args.export_only)
     except FetchError as exc:
         with contextlib.suppress(OSError):
             _remove_manifest(target)

@@ -42,7 +42,7 @@ def test_pragmas_and_schema(store):
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"schema_meta", "cameras", "videos", "frames", "vectors"} <= tables
     meta = dict(conn.execute("SELECT key, value FROM schema_meta"))
-    assert meta["schema_version"] == "1" and meta["dim"] == "512"
+    assert meta["schema_version"] == "2" and meta["dim"] == "512"  # V2 migration (task 11.1)
 
 
 def test_upsert_camera_results(store):

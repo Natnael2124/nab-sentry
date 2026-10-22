@@ -31,11 +31,17 @@ TARGET_CLASSES: dict[int, str] = {
 
 @dataclass(frozen=True)
 class Detection:
-    """One kept detection in source-frame pixel coordinates."""
+    """One kept detection in source-frame pixel coordinates.
+
+    ``high`` is True when ``conf >= det_conf``. Low detections (``det_low_conf <= conf <
+    det_conf``) exist only for the tracker's second association pass (V2 Requirement 9.1);
+    they never get a crop or an embedding.
+    """
 
     cls: str
     conf: float
     box: tuple[int, int, int, int]  # x1, y1, x2, y2 in source-frame pixels
+    high: bool = True
 
 
 @runtime_checkable
@@ -117,27 +123,38 @@ def _to_bgr(frame: np.ndarray) -> np.ndarray:
     return frame
 
 
-def letterbox(frame: np.ndarray, size: int) -> tuple[np.ndarray, LetterboxMeta]:
-    """BGR uint8 HxWx3 frame -> ``(1, 3, size, size)`` float32 RGB in [0, 1].
+def input_hw(size: int | tuple[int, int]) -> tuple[int, int]:
+    """Model input ``(height, width)``: an int means a square input."""
+    if isinstance(size, (tuple, list)):
+        th, tw = int(size[0]), int(size[1])
+    else:
+        th = tw = int(size)
+    return th, tw
 
-    The frame is resized keeping its aspect ratio so it fits in ``size`` x ``size``,
-    centred, and padded with value 114. The returned ``LetterboxMeta`` undoes it.
+
+def letterbox(frame: np.ndarray, size: int | tuple[int, int]) -> tuple[np.ndarray, LetterboxMeta]:
+    """BGR uint8 HxWx3 frame -> ``(1, 3, th, tw)`` float32 RGB in [0, 1].
+
+    ``size`` is ``(th, tw)`` or an int for a square input. The frame is resized keeping its
+    aspect ratio so it fits in ``tw`` x ``th``, centred, and padded with value 114. The
+    returned ``LetterboxMeta`` undoes it. A rectangular input such as 384 x 640 suits 16:9
+    cameras: a square one spends about 44% of its pixels on padding (V2 task 4.3).
     """
     if frame is None or frame.size == 0 or frame.ndim < 2:
         raise ValueError("letterbox: empty frame")
-    size = int(size)
-    if size < 1:
+    th, tw = input_hw(size)
+    if th < 1 or tw < 1:
         raise ValueError(f"letterbox: size must be >= 1, got {size}")
     bgr = _to_bgr(frame)
     if bgr.dtype != np.uint8:
         bgr = np.clip(bgr, 0, 255).astype(np.uint8)
     h, w = bgr.shape[:2]
-    scale = min(size / w, size / h)
-    nw = min(size, max(1, round(w * scale)))
-    nh = min(size, max(1, round(h * scale)))
+    scale = min(tw / w, th / h)
+    nw = min(tw, max(1, round(w * scale)))
+    nh = min(th, max(1, round(h * scale)))
     resized = cv2.resize(bgr, (nw, nh), interpolation=cv2.INTER_LINEAR)
-    canvas = np.full((size, size, 3), LETTERBOX_PAD, dtype=np.uint8)
-    px, py = (size - nw) // 2, (size - nh) // 2
+    canvas = np.full((th, tw, 3), LETTERBOX_PAD, dtype=np.uint8)
+    px, py = (tw - nw) // 2, (th - nh) // 2
     canvas[py : py + nh, px : px + nw] = resized
     rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
     tensor = np.ascontiguousarray(rgb.transpose(2, 0, 1)[None], dtype=np.float32) / 255.0
@@ -188,14 +205,21 @@ def postprocess(
     conf: float,
     iou: float,
     max_det: int,
+    low_conf: float | None = None,
 ) -> list[Detection]:
     """Decode a YOLO11n ``(1, 84, N)`` output into kept ``Detection`` objects.
 
     Steps: transpose to ``(N, 84)``; best class per anchor; keep Target_Classes with
-    score >= ``conf``; undo the letterbox; class-wise greedy NMS (``_nms_indices``,
-    no extra score filter); ``clamp_box`` (drop boxes
-    under 1 px); sort by confidence desc (ties by ``x1`` then ``y1``); take ``max_det``.
+    score >= ``low_conf`` (``None``: same as ``conf``, the V1 behaviour); undo the letterbox;
+    class-wise greedy NMS (``_nms_indices``, no extra score filter); ``clamp_box`` (drop boxes
+    under 1 px); sort by confidence desc (ties by ``x1`` then ``y1``); take up to ``max_det``
+    high detections (score >= ``conf``) followed by up to ``max_det`` low ones.
+
+    The high detections are exactly the V1 result for ``conf``: NMS visits boxes highest
+    score first, so a lower-scoring box can never suppress a higher one, and the low boxes
+    have their own ``max_det`` budget.
     """
+    floor = conf if low_conf is None else min(low_conf, conf)
     arr = np.asarray(raw, dtype=np.float32)
     if arr.ndim == 3:
         if arr.shape[0] != 1:
@@ -216,7 +240,7 @@ def postprocess(
     keep = (
         np.isin(best_cls, target_ids)
         & np.isfinite(best_score)
-        & (best_score >= conf)
+        & (best_score >= floor)
         & np.isfinite(preds[:, :4]).all(axis=1)
         & (bw > 0)
         & (bh > 0)
@@ -242,11 +266,13 @@ def postprocess(
             if box is None:
                 continue
             c = float(min(max(score_k[i], 0.0), 1.0))
-            candidates.append((c, *box, TARGET_CLASSES[int(cid)]))
+            candidates.append((c, *box, TARGET_CLASSES[int(cid)], bool(score_k[i] >= conf)))
 
     candidates.sort(key=lambda t: (-t[0], t[1], t[2]))
-    return [Detection(cls=name, conf=c, box=(bx1, by1, bx2, by2))
-            for c, bx1, by1, bx2, by2, name in candidates[: int(max_det)]]
+    high = [t for t in candidates if t[6]][: int(max_det)]
+    low = [t for t in candidates if not t[6]][: int(max_det)]
+    return [Detection(cls=name, conf=c, box=(bx1, by1, bx2, by2), high=is_high)
+            for c, bx1, by1, bx2, by2, name, is_high in high + low]
 
 
 # ---------------------------------------------------------------------------
@@ -277,28 +303,38 @@ class OnnxYoloDetector:
         conf: float,
         iou: float,
         max_det: int,
-        input_size: int = 640,
+        input_size: int | tuple[int, int] = 640,
         threads: int = 0,
+        low_conf: float | None = None,
     ) -> None:
+        """``input_size`` is ``(height, width)`` or an int for a square input; it must match
+        the static input shape of the ONNX file (checked after loading). ``low_conf`` also returns
+        low detections for the tracker (a value above ``conf`` acts as ``conf``); ``None`` keeps
+        V1 behaviour."""
+        th, tw = input_size if isinstance(input_size, (tuple, list)) else (input_size, input_size)
         issues = [
             issue
             for issue in (
                 _check_range("det_conf", conf, 0.0, 1.0, integer=False),
                 _check_range("det_iou", iou, 0.0, 1.0, integer=False),
                 _check_range("det_max_per_frame", max_det, 1, 100, integer=True),
-                _check_range("det_input_size", input_size, 32, 1920, integer=True),
-                _check_range("num_threads", threads, 0, 256, integer=True),
+                _check_range("det_input_h", th, 32, 1920, integer=True),
+                _check_range("det_input_size", tw, 32, 1920, integer=True),
+                _check_range("det_threads", threads, 0, 256, integer=True),
+                None if low_conf is None
+                else _check_range("det_low_conf", low_conf, 0.0, 1.0, integer=False),
             )
             if issue is not None
         ]
         if issues:
             raise ConfigError(issues)
+        self.low_conf = None if low_conf is None else float(low_conf)
 
         self.model_path = Path(model_path)
         self.conf = float(conf)
         self.iou = float(iou)
         self.max_det = int(max_det)
-        self.input_size = int(input_size)
+        self.input_size: int | tuple[int, int] = (int(th), int(tw)) if th != tw else int(tw)
 
         if not self.model_path.is_file():
             raise ModelMissingError(self.model_path, "missing")
@@ -315,7 +351,16 @@ class OnnxYoloDetector:
             )
         except Exception as exc:  # noqa: BLE001 - corrupt/unreadable weights
             raise ModelMissingError(self.model_path, f"unreadable ({exc})") from exc
-        self._input_name = self._session.get_inputs()[0].name
+        inp = self._session.get_inputs()[0]
+        self._input_name = inp.name
+        shape = list(inp.shape)
+        static = len(shape) == 4 and all(isinstance(d, int) for d in shape[2:])
+        if static and tuple(shape[2:]) != (int(th), int(tw)):
+            raise ModelMissingError(
+                self.model_path,
+                f"exported for a {shape[2]}x{shape[3]} input, but det_input_h x det_input_size "
+                f"is {th}x{tw}",
+            )
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
         if frame is None or frame.size == 0 or frame.ndim < 2:
@@ -327,4 +372,5 @@ class OnnxYoloDetector:
         except Exception as exc:  # noqa: BLE001 - surfaced to the pipeline as a warning
             raise DetectorInferenceError(f"ONNX inference failed: {exc}") from exc
         return postprocess(outputs[0], meta, frame_w, frame_h,
-                           self.conf, self.iou, self.max_det)
+                           self.conf, self.iou, self.max_det,
+                           getattr(self, "low_conf", None))  # tests build bare instances

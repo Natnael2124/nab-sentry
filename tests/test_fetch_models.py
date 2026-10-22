@@ -44,8 +44,8 @@ def ok_downloader(rel: str, models_dir: Path) -> Path:
     return target
 
 
-def ok_exporter(pt: Path, onnx: Path) -> Path:
-    Path(onnx).write_bytes(b"fake onnx graph")
+def ok_exporter(pt: Path, onnx: Path, hw: tuple[int, int]) -> Path:
+    Path(onnx).write_bytes(f"fake onnx graph {hw}".encode())
     return Path(onnx)
 
 
@@ -155,7 +155,7 @@ def test_export_failure_leaves_no_manifest_and_names_onnx(tmp_path, capsys):
     _write_stale_manifest(models_dir)
     rec = Recorder()
 
-    def failing_exporter(pt: Path, onnx: Path) -> Path:
+    def failing_exporter(pt: Path, onnx: Path, hw: tuple[int, int]) -> Path:
         raise RuntimeError("onnx export crashed")
 
     rc = fm.main(
@@ -205,17 +205,18 @@ def test_successful_run_writes_verifiable_manifest(tmp_path, capsys):
     data = json.loads((models_dir / MANIFEST_NAME).read_text(encoding="utf-8"))
     assert data["manifest_version"] == 1
     entries = {f["path"]: f for f in data["files"]}
-    assert set(entries) == {fm.CLIP_REL, fm.YOLO_ONNX_REL}
+    assert set(entries) == {fm.CLIP_REL, *fm.YOLO_ONNX_RELS}
+    assert fm.YOLO_ONNX_RELS == ("yolo11n.onnx", "yolo11n_384x640.onnx")
     assert entries[fm.CLIP_REL]["role"] == fm.ROLE_EMBEDDER
-    assert entries[fm.YOLO_ONNX_REL]["role"] == fm.ROLE_DETECTOR
+    assert all(entries[rel]["role"] == fm.ROLE_DETECTOR for rel in fm.YOLO_ONNX_RELS)
     for path, entry in entries.items():
         assert _HEX64.match(entry["sha256"]), entry
         assert "\\" not in path and not Path(path).is_absolute()
 
-    # Smoke loader received absolute local paths for both runtime files.
-    roles = {role: p for role, p in rec.smoke_calls}
-    assert set(roles) == {fm.ROLE_EMBEDDER, fm.ROLE_DETECTOR}
-    assert all(p.is_absolute() for p in roles.values())
+    # Smoke loader received absolute local paths for every runtime file.
+    assert sorted(p.name for _, p in rec.smoke_calls) == sorted(
+        [Path(fm.CLIP_REL).name, *fm.YOLO_ONNX_RELS])
+    assert all(p.is_absolute() for _, p in rec.smoke_calls)
 
     result = verify_manifest(models_dir)
     assert result.ok, result.failures
@@ -237,3 +238,41 @@ def test_models_dir_cli_argument(tmp_path):
 def test_relative_path_constants_use_forward_slashes(rel):
     value = getattr(fm, rel)
     assert "\\" not in value and not value.startswith("/")
+
+
+# ------------------------------------------------------------------ --export-only (V2 task 9.0)
+
+
+def test_export_only_uses_local_weights_without_downloading(tmp_path, capsys):
+    models_dir = tmp_path / "models"
+    for rel in (fm.CLIP_REL, fm.YOLO_PT_REL):
+        ok_downloader(rel, models_dir)
+    exported: list[tuple[str, tuple[int, int]]] = []
+
+    def no_download(rel, d):
+        raise AssertionError("must not download")
+
+    def exporter(pt, onnx, hw):
+        exported.append((Path(onnx).name, hw))
+        return ok_exporter(pt, onnx, hw)
+
+    rc = fm.main(["--export-only"], downloader=no_download, exporter=exporter,
+                 smoke_loader=lambda r, p: None, sleep=lambda s: None, models_dir=models_dir)
+    assert rc == 0
+    assert exported == [("yolo11n.onnx", (640, 640)), ("yolo11n_384x640.onnx", (384, 640))]
+    assert verify_manifest(models_dir).ok
+
+
+def test_export_only_without_local_weights_fails_naming_file(tmp_path, capsys):
+    models_dir = tmp_path / "models"
+    ok_downloader(fm.CLIP_REL, models_dir)  # yolo11n.pt missing
+    rc = fm.main(["--export-only"], downloader=ok_downloader, exporter=ok_exporter,
+                 smoke_loader=lambda r, p: None, sleep=lambda s: None, models_dir=models_dir)
+    assert rc == 1
+    _assert_no_manifest(models_dir)
+    assert f"Model_Fetcher FAILED: {fm.YOLO_PT_REL}: missing" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("hw,expected", [((640, 640), 8400), ((384, 640), 5040), ((32, 32), 21)])
+def test_anchor_count(hw, expected):
+    assert fm.anchors(*hw) == expected

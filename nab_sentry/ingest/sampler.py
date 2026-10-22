@@ -66,3 +66,35 @@ class Sampler:
                 k += 1
                 self.selected_count = k
                 yield frame
+
+
+class DualSampler:
+    """Sample rate and tracking rate in one pass over the frames (V2 Requirement 9.2).
+
+    Yields ``(frame, on_sample)`` for every frame chosen by either rule, each rule applied
+    independently with its own target counter. The frames with ``on_sample`` true are
+    exactly those :class:`Sampler` would select at ``sample_rate``, so everything V1 derives
+    from them (gate decisions, ``frames`` rows, embeddings, ``sampled_count``) is unchanged;
+    frames chosen only by the tracking rule feed the detector and tracker.
+    """
+
+    def __init__(self, sample_rate: float, track_rate: float) -> None:
+        self.rate = _check_rate(sample_rate)
+        self.track_rate = _check_rate(track_rate)
+        self.selected_count = 0  # frames on the sample-rate cadence, as Sampler counts them
+        self.track_count = 0
+
+    def select(self, frames: Iterable[DecodedFrame]) -> Iterator[tuple[DecodedFrame, bool]]:
+        ks = kt = 0
+        self.selected_count = self.track_count = 0
+        for frame in frames:
+            on_sample = frame.offset_s >= ks / self.rate - EPS
+            on_track = frame.offset_s >= kt / self.track_rate - EPS
+            if on_sample:
+                ks += 1
+                self.selected_count = ks
+            if on_track:
+                kt += 1
+                self.track_count = kt
+            if on_sample or on_track:
+                yield frame, on_sample

@@ -28,7 +28,9 @@ data/
 models/
   manifest.json      SHA-256 of every model file
   open_clip/ViT-B-32-laion2b_s34b_b79k/open_clip_pytorch_model.bin
-  yolo11n.onnx
+  yolo11n.pt         source weights for the ONNX exports
+  yolo11n.onnx       detector, 640 x 640 input
+  yolo11n_384x640.onnx  detector, 384 x 640 input (default, suits 16:9 cameras)
 ```
 
 ## Model provisioning
@@ -39,7 +41,15 @@ Run once on a machine with internet access:
 venv\Scripts\python.exe scripts\fetch_models.py
 ```
 
-This downloads the OpenCLIP ViT-B/32 (`laion2b_s34b_b79k`) weights and `yolo11n.pt` (3 attempts each), exports `models\yolo11n.onnx`, smoke-loads both, and writes `models\manifest.json` last. Any failure exits 1, names the failing file, and leaves no manifest. Use `--models-dir <path>` to write elsewhere.
+This downloads the OpenCLIP ViT-B/32 (`laion2b_s34b_b79k`) weights and `yolo11n.pt` (3 attempts each), exports the detector once per input shape (`models\yolo11n.onnx` for 640 x 640 and `models\yolo11n_384x640.onnx` for 384 x 640), smoke-loads every file, and writes `models\manifest.json` last. Any failure exits 1, names the failing file, and leaves no manifest. Use `--models-dir <path>` to write elsewhere.
+
+`--export-only` skips the downloads and re-exports the detector from the `yolo11n.pt` and OpenCLIP weights already in `models\`. Use it offline after an update adds a new input shape:
+
+```powershell
+venv\Scripts\python.exe scripts\fetch_models.py --export-only
+```
+
+The detector input is `det_input_h` x `det_input_size` (default 384 x 640) and must match an exported file; `--set det_input_h=640` selects the square 640 model. The detector uses `det_threads` ONNX threads (default 2; 4 threads were only 5-10% faster in `scripts/det_bench.py`), separate from the embedder's `num_threads`.
 
 Then copy the whole `models\` folder to `models\` in the workspace on the offline demo machine. Every startup verifies the manifest hashes and exits 4 with the fetch command if a file is missing or altered.
 
@@ -125,21 +135,61 @@ venv\Scripts\python.exe scripts\benchmark.py data\videos\<video>.mp4 --search 20
 
 `VIDEO` times the per-stage pipeline and projects ingest time; `--search N` times search over N random vectors. Peak RSS is printed at the end. Record results here:
 
-| Metric | Median | p95 | Notes |
-|---|---|---|---|
-| Decode (ms/frame) | 0.29 | 0.42 | |
-| Motion gate (frames/s) | 3,970.72 | 4,224.10 | real-time pass |
-| Detector (ms/frame) | 45.73 | 52.91 | YOLO11n ONNX, CPU |
-| Embedder batch 1 (ms/image) | | | not measured |
-| Embedder batch 8 (ms/image) | 49.15 | 54.21 | OpenCLIP ViT-B/32, batched CPU |
-| Thumbnail (ms/JPEG) | | | not measured |
-| Projected ingest (min per footage hour) | ~2.3 | | 10 fps footage, pass fraction 0.367 |
-| Search unfiltered, 200k vectors (ms) | 135.50 | 143.18 | < 1,500 ms target |
-| Search filtered, 200k vectors (ms) | 99.14 | 187.15 | < 1,500 ms target |
-| Peak RSS (MB) | 1,764 | | peak process RSS (MiB) |
-| Server startup to console URL (s) | | | not measured |
+| Metric | Real video median | Real video p95 | Synthetic median | Synthetic p95 | Notes |
+|---|---|---|---|---|---|
+| Decode (ms/frame) | 3.24 | 3.96 | 0.29 | 0.42 | real: 1376x776 H.264 |
+| Motion gate (frames/s) | 157.40 | 201.40 | 3,970.72 | 4,224.10 | real-time pass |
+| Detector (ms/frame) | 103.57 | 117.57 | 45.73 | 52.91 | YOLO11n ONNX, CPU, 4 threads |
+| Embedder batch 1 (ms/image) | 181.85 | 246.10 | | | OpenCLIP ViT-B/32 |
+| Embedder batch 8 (ms/image) | 126.68 | 133.06 | 49.15 | 54.21 | OpenCLIP ViT-B/32, batched CPU |
+| Thumbnail (ms/JPEG) | 13.42 | 17.46 | | | |
+| Projected ingest (min per footage hour) | 26.4 | | ~2.3 | | real: **worst case**, see below; synthetic: 10 fps, pass fraction 0.367 |
+| Search unfiltered, 200k vectors (ms) | 134.91 | 144.21 | 135.50 | 143.18 | < 1,500 ms target |
+| Search filtered, 200k vectors (ms) | 191.08 | 204.22 | 99.14 | 187.15 | < 1,500 ms target |
+| Peak RSS (MiB) | 1,804 | | 1,764 | | peak process RSS |
+| Server startup to console URL (s) | | | | | not measured |
 
-Hardware / date / Config overrides: local CPU hardware; 200,000-vector FAISS index; synthetic video `CAM-SYN01_20250101T080000.mp4`.
+Real video: `CAM-SEC01_20261007T230010.mp4` (6.4 min, 1376x776, 29.66 fps), measured 2026-10-18 on a Dell Latitude 5420 (Intel Core i5-1145G7, 4 cores / 8 threads, 16 GB RAM), AC power, Windows "Balanced" power plan, default Config. Pass fraction 0.695 (269/387 sampled), 1.91 detections per passed frame.
+
+This video is a curated compilation of back-to-back incidents, so the 0.695 pass fraction reflects continuous activity, not gate efficiency, and the 26.4 min/footage-hour projection is a **worst case** for a camera that is busy every second. Idle footage will pass far fewer frames.
+
+Synthetic: `CAM-SYN01_20250101T080000.mp4`, 200,000-vector FAISS index.
+
+### Detector input size (tracking rate)
+
+`scripts/det_bench.py VIDEO` exports YOLO11n at several input sizes into `data/bench/det/` (never touching `models/yolo11n.onnx`) and times them interleaved, so CPU clock changes hit all of them alike. 60 frames of the compilation video, 3 iterations each, 2026-10-18:
+
+| Input | Threads | Median ms | p95 ms | Busy @3 fps | Busy @5 fps | Recall vs 640 (all / small / medium / large) |
+|---|---|---|---|---|---|---|
+| 320 | 2 | 15.6 | 35.5 | 5% | 8% | 0.48 / 0.28 / 0.44 / 0.67 |
+| 416 | 2 | 25.8 | 56.3 | 8% | 13% | 0.67 / 0.38 / 0.74 / 0.79 |
+| 480 | 2 | 34.2 | 70.9 | 10% | 17% | 0.75 / 0.52 / 0.84 / 0.83 |
+| 640 | 2 | 60.5 | 113.0 | 18% | 30% | 1.00 (baseline) |
+| 640 | 4 | 55.9 | 101.7 | 17% | 28% | 1.00 (baseline) |
+| **384x640** | **2** | **36.7** | **66.4** | **11%** | **18%** | **0.98 / 0.93 / 1.00 / 1.00** |
+| 384x640 | 4 | 33.5 | 68.6 | 10% | 17% | 0.98 / 0.93 / 1.00 / 1.00 |
+
+"Busy" is the share of one camera's wall-clock time the detector needs at that tracking rate. "Recall vs 640" is agreement with the 640 model (same class, IoU >= 0.5), not ground truth; small boxes are under 80 px tall (114 boxes in total).
+
+- **A 384x640 rectangular input matches the square 640 model (recall 0.98) at about 60% of its cost**, because a square input wastes about 44% of its pixels on padding for 16:9 cameras. Square inputs below 640 lose many small and medium boxes.
+- **4 threads are barely faster than 2** (5-10%), so the detector should use 2 threads and leave the other cores to the embedder and the recorder.
+- **This laptop's CPU clock varies a lot.** Run one after another, the same 640 model measured anywhere from 51 to 104 ms per frame (including the 103.6 ms in the benchmark table above); p95 is about twice the median. The per-stage numbers above are therefore pessimistic, and only interleaved runs should be compared with each other.
+- **The embedder, not the detector, is now the largest cost while a camera is busy:** at 1 fps with about 1.9 crops per frame, OpenCLIP needs about 2.9 x 127 ms, roughly 37% of wall-clock time. Embedding only the best crops per track (instead of every crop at every sampled second) is the next lever.
+
+### Local VLM (on-demand only)
+
+`scripts/vlm_bench.py VIDEO` times a local Ollama vision model after a vision sanity check (red image, `HELLO 42` text). Measured 2026-10-18, idle machine, same hardware as above:
+
+| Model | Sanity | New image, single frame (s) | New 2x2 storyboard (s) | Image tokens | Gen tok/s | Memory | Verdict |
+|---|---|---|---|---|---|---|---|
+| `gemma4:e2b` (Q4_K_M) | **fails** (lawn scene read as "a sheet of paper with numbers") | 16 | 21-23 | ~150 | ~12 | 6.7 GB loaded | dropped |
+| `qwen3-vl:2b-instruct` (Q4_K_M) | passes | 48-55 | 63-89 (verbose JSON) / ~40 (one-sentence answer) | ~1,100 at any input size | ~13 | 1.9 GB loaded, process RSS peak 4.7 GB | on-demand only |
+
+Qwen3-VL 2B describes scenes correctly ("man in a red striped shirt and black shorts mowing the lawn, white car and white SUV parked behind him") but occasionally invents details ("lifts the mower to the sky"). Encoding one image takes 35-48 s on this CPU; Ollama encodes every image into about 1,100 tokens whatever the input size, so downscaling does not help. Use: `/ask` about one clip, rules with `severity: verify`, overnight summaries. Never per event. The plain `qwen3-vl:2b` tag is the thinking variant and ignores `think: false`.
+
+### Zero-shot attribute tags (no VLM)
+
+`scripts/attr_spike.py` tags crops from their existing OpenCLIP embeddings (about 2 ms per crop). On 24 person and 12 vehicle crops of the compilation video, checked by eye: vehicle colour and type about 80% correct, person top colour about 60% (right on clean single-person crops), clothing type / carried objects / headwear unreliable. About a quarter of the sampled person crops were detector false positives (title-card text, a cat, a fence).
 
 ## Security limitations
 

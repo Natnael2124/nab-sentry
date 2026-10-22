@@ -30,7 +30,8 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from nab_sentry.api.app import REPAIR_HINT, serve
-from nab_sentry.model_files import EMBEDDER_REL
+from nab_sentry.config import Config
+from nab_sentry.model_files import EMBEDDER_REL, detector_input, detector_rel
 from nab_sentry.startup import LOOPBACK_HOST, SECURITY_WARNING
 from nab_sentry.store.db import MetadataStore
 from nab_sentry.store.vector_index import VectorIndex
@@ -246,7 +247,8 @@ def test_model_load_error_exits_6_naming_file(ws: Path, stage: str) -> None:
         raise RuntimeError("corrupt weights")
 
     kw = {"encoder_factory": boom} if stage == "encoder" else {"detector_factory": boom}
-    expected = EMBEDDER_REL.rsplit("/", 1)[-1] if stage == "encoder" else "yolo11n.onnx"
+    expected = (EMBEDDER_REL.rsplit("/", 1)[-1] if stage == "encoder"
+                else detector_rel(*detector_input(Config())))
     run = FakeRun()
     with _recording() as rec:
         assert _serve(ws, run=run, **kw) == 6
