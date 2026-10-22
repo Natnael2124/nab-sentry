@@ -24,12 +24,14 @@ class TrackSink(Protocol):
         motion gate rejects the frame (a person standing still must not be dropped)."""
         ...
 
-    def begin_video(self, camera_id: str, start_t: float) -> None:
-        """A video of ``camera_id`` starting at ``start_t`` (epoch seconds) begins."""
+    def begin_video(self, camera_id: str, start_t: float, video_id: int | None = None) -> None:
+        """A video of ``camera_id`` starting at ``start_t`` (epoch seconds) begins; observations
+        made during it are tagged ``(video_id, frame offset_s)``."""
         ...
 
-    def update(self, frame: DecodedFrame, detections: Sequence[Detection]) -> None:
-        """Consume one detector run, frames in increasing ``offset_s`` order."""
+    def update(self, frame: DecodedFrame, detections: Sequence[Detection]) -> Sequence[int | None]:
+        """Consume one detector run, frames in increasing ``offset_s`` order; returns the track
+        key of each detection (``None``: no track), aligned with ``detections``."""
         ...
 
     def end_video(self, end_t: float) -> list[Any]:

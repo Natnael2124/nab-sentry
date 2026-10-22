@@ -28,7 +28,7 @@ also gets for free); :meth:`IngestPipeline.reconcile` repairs that state on the 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -50,9 +50,10 @@ from nab_sentry.ingest.sources import (
 )
 from nab_sentry.ingest.transcode import PlaybackJob, default_playback, part_path, write_thumbnail
 from nab_sentry.logging_setup import get_logger
-from nab_sentry.store.db import MetadataStore, NewFrame, NewVector, NewVideo
+from nab_sentry.store.db import MetadataStore, NewFrame, NewTrackObs, NewVector, NewVideo
 from nab_sentry.store.vector_index import VectorIndex
 from nab_sentry.track import TrackSink
+from nab_sentry.track.bytetrack import TrackRecord
 
 log = get_logger("ingest")
 
@@ -205,6 +206,7 @@ class _Pending:
     image: np.ndarray
     detection: Detection | None  # None -> kind 'frame'
     box: tuple[int, int, int, int] | None = None
+    track_key: int | None = None  # tracker key of the detection (V2), linked after end_video
 
 
 @dataclass
@@ -220,6 +222,9 @@ class _VideoState:
     index_saved: bool = False
     job_killed: bool = False
     tracking: bool = False  # TrackSink.begin_video ran for this video (rollback must undo it)
+    camera_id: str | None = None
+    track_ids_before: dict[int, int] | None = None  # camera's key -> track_id map at the start
+    crop_keys: list[tuple[int, int]] = field(default_factory=list)  # (vector_id, track key)
 
 
 class IngestPipeline:
@@ -242,6 +247,9 @@ class IngestPipeline:
         self.encoder = encoder
         self.detector = detector
         self.tracker = tracker  # None: exactly V1 (sample rate only, no extra detector runs)
+        # camera_id -> {tracker key -> tracks.track_id} for tracks already in the store; tracks
+        # continuing into the next Segment extend their row instead of starting a new one.
+        self._track_ids: dict[str, dict[int, int]] = {}
         self.open_source = open_source
         self.start_playback = start_playback or (
             lambda src, dst: default_playback(src, dst, cfg.playback_max_width)
@@ -396,7 +404,9 @@ class IngestPipeline:
         )
         gate.reset()
         if tracker is not None:
-            tracker.begin_video(meta.camera_id, to_aware_local(meta.start_time).timestamp())
+            st.camera_id = meta.camera_id
+            st.track_ids_before = dict(self._track_ids.get(meta.camera_id, {}))
+            tracker.begin_video(meta.camera_id, to_aware_local(meta.start_time).timestamp(), video_id)
             st.tracking = True
         queue: list[_Pending] = []
         batch = int(cfg.batch_size)
@@ -438,11 +448,12 @@ class IngestPipeline:
 
             queue.append(_Pending(frame_id, image, None))
             dets = self._run_detector(detector, path, frame.offset_s, image)
+            keys: dict[int, int | None] = {}
             if tracker is not None:
-                tracker.update(frame, dets)
+                keys = {id(d): k for d, k in zip(dets, tracker.update(frame, dets) or ())}
             for det, box in self._crops(dets, image):
                 x1, y1, x2, y2 = box
-                queue.append(_Pending(frame_id, image[y1:y2, x1:x2], det, box))
+                queue.append(_Pending(frame_id, image[y1:y2, x1:x2], det, box, keys.get(id(det))))
             while len(queue) >= batch:
                 self._flush(path, queue[:batch], st)
                 del queue[:batch]
@@ -456,11 +467,10 @@ class IngestPipeline:
         if passed == 0:
             raise UnreadableVideo(f"no frames passed the motion gate: {path}")
         if tracker is not None:
-            # Inside the transaction: a later failure rolls the tracks back too. The drained
-            # records are stored from V2 task 11.3; until then they are dropped here, which
-            # also keeps the tracker's memory bounded.
-            tracker.end_video(to_aware_local(meta.start_time).timestamp()
-                              + float(source.decoded_index_count) / fps)
+            # Inside the transaction: a failure later on rolls the rows and the tracker back.
+            records = tracker.end_video(to_aware_local(meta.start_time).timestamp()
+                                        + float(source.decoded_index_count) / fps)
+            self._store_tracks(meta.camera_id, records, st)
 
         # 7. playback file, then finalize the videos row (3.6, 6.5).
         self._check("playback_wait", path)
@@ -549,8 +559,37 @@ class IngestPipeline:
                     frame_id=it.frame_id, kind="crop", det_class=it.detection.cls,
                     det_conf=float(it.detection.conf), box=it.box,
                 )
-            st.staged_ids.append(self.db.insert_vector(nv))
+            vector_id = self.db.insert_vector(nv)
+            st.staged_ids.append(vector_id)
             st.staged_vecs.append(vec)
+            if it.track_key is not None:
+                st.crop_keys.append((vector_id, it.track_key))
+
+    def _store_tracks(self, camera_id: str, records: Sequence[TrackRecord], st: _VideoState) -> None:
+        """Write drained track records (V2 Requirement 10.7): a new ``tracks`` row per new
+        confirmed track, ``extend_track`` for one continuing from an earlier Segment, one
+        ``track_obs`` row per observation (tagged with its own video, which for back-filled
+        observations can be the previous Segment), then ``vectors.track_id`` for this video's
+        crops of confirmed tracks. A crop of a track confirmed only in a later Segment stays
+        unlinked."""
+        ids = self._track_ids.setdefault(camera_id, {})
+        for rec in records:
+            obs = [NewTrackObs(o.tag[0], o.tag[1], round(o.t * 1000), o.conf, o.high, o.box)
+                   for o in rec.observations if isinstance(o.tag, tuple) and o.tag[0] is not None]
+            if obs:
+                last_ms = max(o.abs_epoch_ms for o in obs)
+                if rec.key in ids:
+                    self.db.extend_track(ids[rec.key], last_ms, len(obs))
+                else:
+                    ids[rec.key] = self.db.insert_track(
+                        camera_id, rec.cls, min(o.abs_epoch_ms for o in obs), last_ms, len(obs))
+                self.db.insert_track_obs(ids[rec.key], obs)
+        links = [(v, ids[k]) for v, k in st.crop_keys if k in ids]
+        if links:
+            self.db.link_vectors(links)
+        for rec in records:
+            if rec.ended:
+                ids.pop(rec.key, None)  # no more observations will come for it
 
     # -- compensation --------------------------------------------------------------------------
 
@@ -572,6 +611,8 @@ class IngestPipeline:
                 self.tracker.rollback_video()
             except Exception:
                 log.error("track rollback failed for %s", path, exc_info=True)
+            if st.camera_id is not None and st.track_ids_before is not None:
+                self._track_ids[st.camera_id] = st.track_ids_before
         try:
             self.db.rollback()  # no-op unless a failed COMMIT left the transaction open
         except Exception:
@@ -650,6 +691,10 @@ class IngestPipeline:
                 if f.is_file() and pattern.match(f.name) and f.name not in referenced:
                     if _unlink(f):
                         deleted_files.append(f.name)
+
+        empty_tracks = self.db.delete_empty_tracks()  # their videos were deleted (V2 11.3)
+        if empty_tracks:
+            log.warning("reconcile: deleted %d tracks without observations", empty_tracks)
 
         if index_changed:
             self.index.save(cfg.index_path)

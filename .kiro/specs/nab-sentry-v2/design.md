@@ -224,7 +224,9 @@ Commands are parsed by `parse_command(text) -> Command | None` (pure). Unknown c
 
 ## Data Models
 
-### Schema v2 additions
+### Schema v2 additions (tracks) and v3 additions (alerts)
+
+Version 2 (task 11.1, done) adds `tracks`, `track_obs` (with a `high` flag per observation) and `vectors.track_id`. The alert tables below (`alerts`, `alert_messages`, `rule_mutes`, `kv`) are version 3, added with the rule engine (task 13.4) so their shape can follow the rules as built. Migrations live in `MIGRATIONS` in `store/db.py`; a new database is created at version 1 and migrated like an old one, so every database runs the same code.
 
 ```sql
 ALTER TABLE vectors ADD COLUMN track_id INTEGER REFERENCES tracks(track_id) ON DELETE SET NULL;
@@ -245,6 +247,7 @@ CREATE TABLE track_obs (
     offset_s     REAL    NOT NULL CHECK (offset_s >= 0),
     abs_epoch_ms INTEGER NOT NULL,
     conf         REAL    NOT NULL CHECK (conf BETWEEN 0 AND 1),
+    high         INTEGER NOT NULL CHECK (high IN (0, 1)),
     x1 INTEGER NOT NULL, y1 INTEGER NOT NULL, x2 INTEGER NOT NULL, y2 INTEGER NOT NULL,
     CHECK (x1 >= 0 AND y1 >= 0 AND x1 < x2 AND y1 < y2),
     PRIMARY KEY (track_id, video_id, offset_s)

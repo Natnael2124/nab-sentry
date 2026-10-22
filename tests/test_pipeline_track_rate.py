@@ -92,10 +92,11 @@ class FakeTrackSink:
             return False
         return self.pattern[len(self.updates) % len(self.pattern)]
 
-    def update(self, frame, detections) -> None:
+    def update(self, frame, detections) -> list:
         self.updates.append((frame.index, frame.offset_s, len(detections)))
+        return [None] * len(detections)
 
-    def begin_video(self, camera_id, start_t) -> None:
+    def begin_video(self, camera_id, start_t, video_id=None) -> None:
         pass
 
     def end_video(self, end_t) -> list:

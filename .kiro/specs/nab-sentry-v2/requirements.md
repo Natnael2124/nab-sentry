@@ -177,7 +177,7 @@ V1 glossary terms (Ingest_Pipeline, Sampler, Motion_Gate, Detector, Embedder, Me
 
 #### Acceptance Criteria
 
-1. WHEN the Metadata_Store opens a database with schema version 1, THE Metadata_Store SHALL migrate it to version 2 in one transaction, adding the new tables and the nullable `vectors.track_id` column, and leave all V1 rows and the Vector_Index unchanged.
+1. WHEN the Metadata_Store opens a database with schema version 1, THE Metadata_Store SHALL migrate it to version 2 in one transaction, adding the `tracks` and `track_obs` tables and the nullable `vectors.track_id` column, and leave all V1 rows and the Vector_Index unchanged. The alert tables are added by a later migration (version 3) with the rule engine. A database with a newer schema version SHALL be refused, not downgraded.
 2. `reconcile()` SHALL also delete alert media files that no `alerts` row references.
 
 ### Requirement 12: Zones, rules and the alert outbox

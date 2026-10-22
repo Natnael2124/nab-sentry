@@ -1,4 +1,4 @@
-"""SQLite Metadata_Store: cameras, videos, frames, and vectors.
+"""SQLite Metadata_Store: cameras, videos, frames, vectors and (schema v2) tracks.
 
 Requirements 1.9, 1.10, 6.1-6.3, 6.9, 8.3, 8.8, 8.9, 8.13, 18.4.
 
@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -27,7 +28,7 @@ if TYPE_CHECKING:  # avoid an import cycle once engine.py imports MetadataStore 
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 EMBED_MODEL = "ViT-B-32/laion2b_s34b_b79k"
 EMBED_DIM = "512"
 
@@ -93,6 +94,44 @@ CREATE TABLE IF NOT EXISTS vectors (
 CREATE INDEX IF NOT EXISTS idx_vectors_frame      ON vectors(frame_id);
 CREATE INDEX IF NOT EXISTS idx_vectors_kind_class ON vectors(kind, det_class);
 """
+
+# Schema migrations: MIGRATIONS[v] upgrades version v to v + 1 (V2 Requirement 11). A new
+# database is created with the version-1 DDL above and then migrated like an old one, so every
+# database runs the same migration code. Statements run one by one inside BEGIN IMMEDIATE
+# (``executescript`` would commit early).
+MIGRATIONS: dict[int, tuple[str, ...]] = {
+    1: (
+        """CREATE TABLE tracks (
+            track_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            camera_id      TEXT    NOT NULL REFERENCES cameras(camera_id),
+            det_class      TEXT    NOT NULL
+                CHECK (det_class IN ('person','car','truck','bus','motorcycle','bicycle')),
+            first_epoch_ms INTEGER NOT NULL,
+            last_epoch_ms  INTEGER NOT NULL CHECK (last_epoch_ms >= first_epoch_ms),
+            n_obs          INTEGER NOT NULL CHECK (n_obs >= 1)
+        )""",
+        "CREATE INDEX idx_tracks_camera_time ON tracks(camera_id, first_epoch_ms)",
+        """CREATE TABLE track_obs (
+            track_id     INTEGER NOT NULL REFERENCES tracks(track_id) ON DELETE CASCADE,
+            video_id     INTEGER NOT NULL REFERENCES videos(video_id) ON DELETE CASCADE,
+            offset_s     REAL    NOT NULL CHECK (offset_s >= 0),
+            abs_epoch_ms INTEGER NOT NULL,
+            conf         REAL    NOT NULL CHECK (conf BETWEEN 0 AND 1),
+            high         INTEGER NOT NULL CHECK (high IN (0, 1)),
+            x1 INTEGER NOT NULL, y1 INTEGER NOT NULL, x2 INTEGER NOT NULL, y2 INTEGER NOT NULL,
+            CHECK (x1 >= 0 AND y1 >= 0 AND x1 < x2 AND y1 < y2),
+            PRIMARY KEY (track_id, video_id, offset_s)
+        )""",
+        "CREATE INDEX idx_track_obs_video ON track_obs(video_id)",
+        "ALTER TABLE vectors ADD COLUMN track_id INTEGER REFERENCES tracks(track_id) ON DELETE SET NULL",
+        "CREATE INDEX idx_vectors_track ON vectors(track_id)",
+    ),
+}
+
+
+class SchemaVersionError(RuntimeError):
+    """The database was written by a newer NAB Sentry (schema version above this code's)."""
+
 
 # Fixed template: the clause text never changes, only the bound values (8.3, 8.8, 8.9, 8.13, 18.4).
 ALLOWED_IDS_SQL = """
@@ -160,6 +199,16 @@ class NewVector:
 
 
 @dataclass(frozen=True)
+class NewTrackObs:
+    video_id: int
+    offset_s: float
+    abs_epoch_ms: int
+    conf: float
+    high: bool
+    box: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
 class HitRow:
     vector_id: int
     frame_id: int
@@ -217,12 +266,30 @@ class MetadataStore:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
-        self._conn.execute("PRAGMA foreign_keys = ON")
-        self._conn.execute("PRAGMA journal_mode = WAL")
+        # busy_timeout first: switching to WAL and creating/migrating the schema need locks, and
+        # several processes (watcher, API server) may open the same database at the same time.
         self._conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout_ms)}")  # int-coerced constant
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._enable_wal(busy_timeout_ms)
         self.init_schema()
 
     # -- lifecycle -----------------------------------------------------------------------------
+
+    def _enable_wal(self, timeout_ms: int) -> None:
+        """Switch to WAL unless it already is. SQLite fails a journal-mode change at once
+        ("database is locked", no busy handler) while another connection has the file open, so
+        retry until ``timeout_ms``; a database NAB Sentry created is WAL already (it persists)."""
+        if self._conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal":
+            return
+        deadline = time.monotonic() + timeout_ms / 1000
+        while True:
+            try:
+                self._conn.execute("PRAGMA journal_mode = WAL")
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.02)
 
     def close(self) -> None:
         with self._lock:
@@ -236,11 +303,46 @@ class MetadataStore:
 
     def init_schema(self) -> None:
         with self._lock:
-            self._conn.executescript(DDL)
+            self._conn.executescript(DDL)  # version-1 tables; no-op on an existing database
             self._conn.executemany(
                 "INSERT OR IGNORE INTO schema_meta(key, value) VALUES (?, ?)",
-                [("schema_version", SCHEMA_VERSION), ("embed_model", EMBED_MODEL), ("dim", EMBED_DIM)],
+                [("schema_version", "1"), ("embed_model", EMBED_MODEL), ("dim", EMBED_DIM)],
             )
+            self.migrate()
+
+    def schema_version(self) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
+        return int(row[0]) if row else 0
+
+    def migrate(self) -> list[int]:
+        """Upgrade to ``SCHEMA_VERSION`` one step per transaction; returns the versions applied.
+
+        Each step re-reads the version inside ``BEGIN IMMEDIATE``, so two processes opening the
+        same old database cannot both apply it. A newer database raises SchemaVersionError.
+        """
+        target = int(SCHEMA_VERSION)
+        applied: list[int] = []
+        with self._lock:
+            while True:
+                with self._txn():
+                    (cur,) = self._conn.execute(
+                        "SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
+                    version = int(cur)
+                    if version > target:
+                        raise SchemaVersionError(
+                            f"{self.path}: schema version {version} is newer than this NAB Sentry "
+                            f"({target}); upgrade the software instead of opening it")
+                    if version == target:
+                        return applied
+                    for stmt in MIGRATIONS[version]:
+                        self._conn.execute(stmt)
+                    self._conn.execute(
+                        "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+                        (str(version + 1),))
+                log.info("migrated %s from schema version %d to %d", self.path, version, version + 1)
+                applied.append(version + 1)
 
     # -- transactions --------------------------------------------------------------------------
 
@@ -251,6 +353,13 @@ class MetadataStore:
     @contextmanager
     def transaction(self) -> Iterator[None]:
         """``BEGIN IMMEDIATE`` ... ``COMMIT``; ``ROLLBACK`` on any exception (incl. KeyboardInterrupt)."""
+        with self._txn():
+            yield
+
+    @contextmanager
+    def _txn(self) -> Iterator[None]:
+        """The implementation of :meth:`transaction`; used directly by :meth:`migrate`, which
+        runs inside ``__init__`` where a subclass's overrides may not be ready yet."""
         with self._lock:
             if self._conn.in_transaction:
                 raise RuntimeError("nested MetadataStore.transaction() is not supported")
@@ -354,6 +463,50 @@ class MetadataStore:
                 (int(v.frame_id), v.kind, v.det_class, conf, x1, y1, x2, y2),
             )
             return int(cur.lastrowid)
+
+    def insert_track(self, camera_id: str, det_class: str, first_epoch_ms: int,
+                     last_epoch_ms: int, n_obs: int) -> int:
+        with self._write():
+            cur = self._conn.execute(
+                "INSERT INTO tracks(camera_id, det_class, first_epoch_ms, last_epoch_ms, n_obs) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (camera_id, det_class, int(first_epoch_ms), int(last_epoch_ms), int(n_obs)),
+            )
+            return int(cur.lastrowid)
+
+    def extend_track(self, track_id: int, last_epoch_ms: int, added_obs: int) -> None:
+        """A continuing track got ``added_obs`` more observations, the latest at ``last_epoch_ms``."""
+        with self._write():
+            cur = self._conn.execute(
+                "UPDATE tracks SET last_epoch_ms = MAX(last_epoch_ms, ?), n_obs = n_obs + ? "
+                "WHERE track_id = ?",
+                (int(last_epoch_ms), int(added_obs), int(track_id)),
+            )
+            if cur.rowcount != 1:
+                raise KeyError(f"no tracks row with track_id={track_id}")
+
+    def insert_track_obs(self, track_id: int, obs: Sequence[NewTrackObs]) -> None:
+        with self._write():
+            self._conn.executemany(
+                "INSERT INTO track_obs(track_id, video_id, offset_s, abs_epoch_ms, conf, high, "
+                "x1, y1, x2, y2) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(int(track_id), int(o.video_id), float(o.offset_s), int(o.abs_epoch_ms),
+                  float(o.conf), int(bool(o.high)), *(int(c) for c in o.box)) for o in obs],
+            )
+
+    def link_vectors(self, pairs: Sequence[tuple[int, int]]) -> None:
+        """Set ``vectors.track_id`` for ``(vector_id, track_id)`` pairs."""
+        with self._write():
+            self._conn.executemany("UPDATE vectors SET track_id = ? WHERE vector_id = ?",
+                                   [(int(t), int(v)) for v, t in pairs])
+
+    def delete_empty_tracks(self) -> int:
+        """Delete tracks left without observations (their videos were deleted); returns count."""
+        with self._write():
+            cur = self._conn.execute(
+                "DELETE FROM tracks WHERE NOT EXISTS "
+                "(SELECT 1 FROM track_obs o WHERE o.track_id = tracks.track_id)")
+            return int(cur.rowcount)
 
     def finalize_video(
         self, video_id: int, *, sampled: int, passed: int, duration_s: float, playback_path: str

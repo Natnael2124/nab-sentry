@@ -45,6 +45,7 @@ class Observation:
     box: tuple[int, int, int, int]
     conf: float
     high: bool
+    tag: object = None  # caller's reference for the frame, e.g. (video_id, offset_s)
 
 
 @dataclass
@@ -159,7 +160,7 @@ class ByteTracker:
         """Live tracks (tentative and confirmed), in key order."""
         return list(self._tracks)
 
-    def step(self, t: float, detections: Sequence[Detection]) -> list[Assignment]:
+    def step(self, t: float, detections: Sequence[Detection], tag: object = None) -> list[Assignment]:
         if self._now is not None and t < self._now:
             raise ValueError(f"time went backwards: {t} < {self._now}")
         self._now = t
@@ -180,7 +181,7 @@ class ByteTracker:
                                      [preds[k] for k in free], self.match_iou)
                 for fi, bj in pairs:
                     tr, n = tracks[free[fi]], idx[bj]
-                    self._hit(tr, t, detections[n])
+                    self._hit(tr, t, detections[n], tag)
                     matched.add(tr.key)
                     assigned[n] = tr
 
@@ -191,7 +192,7 @@ class ByteTracker:
             if n not in assigned and d.high:
                 tr = Track(self._new_key(), d.cls, tuple(map(float, d.box)), first_t=t, last_t=t,
                            confirmed=self.min_hits <= 1)
-                tr.pending.append(Observation(t, tuple(d.box), float(d.conf), d.high))
+                tr.pending.append(Observation(t, tuple(d.box), float(d.conf), d.high, tag))
                 self._tracks.append(tr)
                 assigned[n] = tr
         self._tracks.sort(key=lambda tr: tr.key)
@@ -207,7 +208,7 @@ class ByteTracker:
         self._next_key += 1
         return key
 
-    def _hit(self, tr: Track, t: float, d: Detection) -> None:
+    def _hit(self, tr: Track, t: float, d: Detection, tag: object = None) -> None:
         box = tuple(map(float, d.box))
         dt = t - tr.last_t
         if dt > 0:
@@ -217,7 +218,7 @@ class ByteTracker:
         tr.box = box  # type: ignore[assignment]
         tr.last_t = t
         tr.hits += 1
-        tr.pending.append(Observation(t, tuple(d.box), float(d.conf), d.high))
+        tr.pending.append(Observation(t, tuple(d.box), float(d.conf), d.high, tag))
         if tr.hits >= self.min_hits:
             tr.confirmed = True
 

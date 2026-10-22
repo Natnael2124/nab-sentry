@@ -56,6 +56,7 @@ class LiveTracks:
         self._cur: _CameraState | None = None
         self._cam_id: str | None = None
         self._start_t = 0.0
+        self._video_id: int | None = None
         self._snap: tuple[str, _CameraState | None] | None = None
 
     @classmethod
@@ -78,7 +79,7 @@ class LiveTracks:
     def active(self) -> bool:
         return self._cur is not None and self._cur.tracker.active
 
-    def begin_video(self, camera_id: str, start_t: float) -> None:
+    def begin_video(self, camera_id: str, start_t: float, video_id: int | None = None) -> None:
         st = self._cams.get(camera_id)
         self._snap = (camera_id, copy.deepcopy(st))
         if st is None:
@@ -95,8 +96,9 @@ class LiveTracks:
                 st.stats["gap_resets"] += 1
         st.tracker.begin_video(start_t)
         self._cur, self._cam_id, self._start_t = st, camera_id, float(start_t)
+        self._video_id = video_id
 
-    def update(self, frame: DecodedFrame, detections: Sequence[Detection]) -> None:
+    def update(self, frame: DecodedFrame, detections: Sequence[Detection]) -> list[int | None]:
         st = self._require()
         t = self._start_t + float(frame.offset_s)
         if st.last_t is not None and t < st.last_t:
@@ -109,8 +111,9 @@ class LiveTracks:
                 st.tracker.end_all()
                 st.stats["scene_cuts"] += 1
             st.sig = sig
-        st.tracker.step(t, detections)
+        res = st.tracker.step(t, detections, tag=(self._video_id, float(frame.offset_s)))
         st.last_t = t
+        return [a.track_key for a in res]
 
     def end_video(self, end_t: float) -> list[TrackRecord]:
         st = self._require()

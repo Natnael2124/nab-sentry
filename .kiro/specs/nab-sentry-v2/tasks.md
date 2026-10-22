@@ -136,16 +136,23 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
     - _Requirements: 10.4, 10.5_
 
 - [ ] 11. Schema v2 and track storage
-  - [ ] 11.1 Migration v1 → v2 in `MetadataStore.open` (tables `tracks`, `track_obs`, `alerts`, `alert_messages`, `rule_mutes`, `kv`; `vectors.track_id`)
+  - [x] 11.1 Migration v1 → v2 in `MetadataStore.open` (tables `tracks`, `track_obs`; `vectors.track_id`)
+    - Done 2026-10-22. Scope change: the alert tables (`alerts`, `alert_messages`, `rule_mutes`, `kv`) move to a v3 migration in task 13.4, so their shape follows the rule engine instead of being guessed now. `MIGRATIONS` in `store/db.py`; new databases are created at v1 and migrated (one code path); each step re-reads the version inside `BEGIN IMMEDIATE`; a newer database raises `SchemaVersionError`. A copy of the real V1 database (6 cameras, 1 video, 269 frames, 812 vectors) migrated with all rows unchanged, integrity and foreign-key checks clean
     - _Requirements: 11.1_
-  - [ ] 11.2 Property test: migration preserves v1 rows, idempotent (Property 19)
+  - [x] 11.2 Property test: migration preserves v1 rows, idempotent (Property 19); plus newer-version refusal, four concurrent openers migrate once, cascade of track rows with their video
     - File: `tests/test_store_migration.py`
-  - [ ] 11.3 Store confirmed Tracks, back-filled observations, and `vectors.track_id`; extend compensation to restore live state on rollback
+  - [x] 11.3 Store confirmed Tracks, back-filled observations, and `vectors.track_id`; extend compensation to restore live state on rollback
+    - Done 2026-10-22. Observations are tagged `(video_id, offset_s)`, so back-filled ones reference the previous Segment's video. The pipeline maps tracker keys to `tracks.track_id` per camera (a continuing track extends its row) and restores the map on rollback. `TrackSink.update` returns each detection's key; crops of tracks confirmed by the end of the video get `vectors.track_id` (a crop of a track confirmed only in a later Segment stays unlinked). `reconcile()` deletes tracks left without observations
     - _Requirements: 10.6, 10.7_
-  - [ ] 11.4 Extend the V1 rollback tests: failure at every checkpoint leaves no track rows and restores live state
+  - [x] 11.4 Extend the V1 rollback tests: failure at every checkpoint leaves no track rows and restores live state (`tests/test_pipeline_tracks.py`: failure at every checkpoint of Segment 2 then retry == clean run, by content)
     - File: `tests/test_pipeline_rollback.py`
   - [ ] 11.5 Slow sanity: real YOLO + tracker on the Compilation_Video; no track spans a labelled scene cut; ID count within 2x of labelled people
-  - [ ] 11.6 Checkpoint: tracks visible for replayed footage; full V1 suite green
+    - Test written (`tests/test_tracks_real_footage.py`, first 120 s), **skipped until the Integrator's labels exist (2.4)**; validated with temporary labels. Cuts count at about ±1 s (the cut labelled 104.0 really happens at about 104.1 s)
+    - Full Compilation_Video with real models (2026-10-22): 166 tracks, 2,349 observations, n_obs consistent; 88% of crops linked; 39 scene cuts detected. Against the contact sheet's suggested cuts, 5 tracks seemed to span a cut, all checked by eye: the cuts were false (a minivan backing out at 49 s, the cat at 188-189 s, a person covering a doorbell lens at 321 s), so 0 real crossings. Track 80 is the cat confirmed as a "person" for 7 s: a persistent detector false positive the tentative filter cannot catch
+    - Cost: 247 s to ingest 387 s of footage busy every second (AC power, CPU at 1.5 GHz), i.e. ~1.5 continuously busy cameras per laptop; input for decision 5.1
+  - [x] 11.6 Checkpoint: tracks visible for replayed footage; full V1 suite green
+    - 2026-10-23, AC power: fast suite 713 passed in 5 min 56 s (longest test 26.6 s); slow suite 16 passed, 2 skipped (11.5, waiting for labels) in 2 min 3 s (longest 25.4 s)
+    - Two database fixes found on the way: the migration ran through the public `transaction()` inside `__init__`, which subclasses can hook before they are ready (now a private `_txn()`); and opening the same not-yet-WAL database from several connections at once failed with "database is locked" because SQLite fails a journal-mode change immediately instead of waiting (now skipped when already WAL, retried up to `busy_timeout` otherwise; `busy_timeout` is set first)
 
 ### Phase B3: Zones, rules, outbox
 
