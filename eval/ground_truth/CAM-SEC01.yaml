@@ -1,0 +1,38 @@
+# Ground_Truth_File for the Compilation_Video, labelled by Claude (not by the Integrator) on
+# 2026-10-23 from the contact sheets (scripts/contact_sheet.py), 1 s resolution. 37 real scene
+# cuts; the contact sheet's false suggestions (49, 188-193, 321-323, 332 s: a minivan, a cat and a
+# covered lens moving the picture) are left out. One incident per clip that shows target classes;
+# count = roughly how many such objects are visible at once. Clips with only animals, weather or
+# nothing (intro 0-6, tornado 56-75, bedroom 104-110, bear 120-138, pets 139-154 and 212-222,
+# rocket 174-183, cat 184-196 and 295-313, porch animal 278-285) have no incident.
+video: CAM-SEC01_20261007T230010.mp4
+duration_s: 387.0
+scene_cuts: [0.0, 7.0, 16.0, 24.0, 33.0, 44.0, 56.0, 76.0, 83.0, 93.0, 104.0, 111.0, 120.0, 133.0,
+             139.0, 155.0, 163.0, 174.0, 184.0, 197.0, 205.0, 212.0, 223.0, 235.0, 245.0, 255.0,
+             266.0, 278.0, 286.0, 295.0, 314.0, 324.0, 335.0, 348.0, 357.0, 372.0, 386.0]
+incidents:
+  - {start: 7.0, end: 15.9, classes: [car], count: 3, description: "snow slides off a carport onto parked cars"}
+  - {start: 16.0, end: 23.9, classes: [car, truck], count: 4, description: "parked cars and a white pickup in a driveway"}
+  - {start: 24.0, end: 32.9, classes: [person, car], count: 4, description: "police traffic stop, officers with two people by a police SUV"}
+  - {start: 33.0, end: 43.9, classes: [person], count: 2, description: "child swimming, woman in yellow runs in"}
+  - {start: 44.0, end: 55.9, classes: [car], count: 2, description: "white minivan backs out on a wet driveway"}
+  - {start: 76.0, end: 82.9, classes: [person], count: 1, description: "night porch, person walks past bicycles"}
+  - {start: 83.0, end: 92.9, classes: [person], count: 1, description: "person mowing a lawn at night, headlights pass"}
+  - {start: 93.0, end: 103.9, classes: [car], count: 4, description: "highway at night"}
+  - {start: 111.0, end: 119.9, classes: [person, car], count: 2, description: "snowy street, person walking, red car arrives"}
+  - {start: 155.0, end: 162.9, classes: [person, car], count: 1, description: "child in red on a porch with a dog, car parked"}
+  - {start: 163.0, end: 173.9, classes: [person], count: 5, description: "restaurant guests at tables"}
+  - {start: 197.0, end: 204.9, classes: [person], count: 1, description: "man in a red shirt mowing a lawn"}
+  - {start: 205.0, end: 211.9, classes: [person], count: 1, description: "person on a porch"}
+  - {start: 223.0, end: 234.9, classes: [car, truck], count: 2, description: "driveway with a parked van and truck"}
+  - {start: 235.0, end: 244.9, classes: [car], count: 3, description: "front yard, parked cars on the street"}
+  - {start: 245.0, end: 254.9, classes: [person], count: 2, description: "living room, adult and child"}
+  - {start: 255.0, end: 265.9, classes: [person], count: 1, description: "woman with a stroller, a tree falls"}
+  - {start: 266.0, end: 277.9, classes: [person, car], count: 2, description: "night street, police car, pedestrian"}
+  - {start: 286.0, end: 294.9, classes: [person], count: 2, description: "barber shop"}
+  - {start: 314.0, end: 323.9, classes: [person], count: 1, description: "person at a doorbell covers the lens"}
+  - {start: 324.0, end: 334.9, classes: [person], count: 1, description: "snowy sidewalk at night, snow slides off a roof"}
+  - {start: 335.0, end: 347.9, classes: [person, car, truck], count: 4, description: "fire truck and a car crash on a wet street"}
+  - {start: 348.0, end: 356.9, classes: [person], count: 5, description: "family eating on the floor"}
+  - {start: 357.0, end: 371.9, classes: [person, car], count: 2, description: "street crossing, people running, a car passes"}
+  - {start: 372.0, end: 385.9, classes: [person, car], count: 3, description: "cafe, a car crashes through the window"}

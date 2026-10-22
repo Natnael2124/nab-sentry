@@ -6,7 +6,7 @@
     duration_s: 387.0            # optional; enables the "past the end" check
     scene_cuts: [0.0, 23.0, 61.0]
     incidents:
-      - {start: 2.0, end: 14.5, classes: [person], description: "man opens gate", zone: gate}
+      - {start: 2.0, end: 14.5, classes: [person], description: "man opens gate", zone: gate, count: 1}
 
 Offsets are seconds from the start of the video. :func:`load_ground_truth` reports every bad
 entry at once in a :class:`GroundTruthError` (one issue string per problem, naming the entry),
@@ -41,6 +41,7 @@ class Incident:
     classes: tuple[str, ...]
     description: str
     zone: str | None = None
+    count: int = 1  # how many such objects are visible at once (roughly)
 
     def contains(self, offset_s: float) -> bool:
         return self.start <= offset_s <= self.end
@@ -128,8 +129,11 @@ def parse_ground_truth(data: Any, path: Path | str = "<data>") -> GroundTruth:
         zone = item.get("zone")
         if zone is not None and (not isinstance(zone, str) or not zone.strip()):
             issues.append(f"{name}.zone: must be a non-empty string when given")
+        count = item.get("count", 1)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+            issues.append(f"{name}.count: must be an integer >= 1")
         if len(issues) == bad:
-            incidents.append(Incident(start, end, tuple(classes), desc.strip(), zone))  # type: ignore[arg-type]
+            incidents.append(Incident(start, end, tuple(classes), desc.strip(), zone, count))  # type: ignore[arg-type]
 
     if issues:
         raise GroundTruthError(path, issues)
