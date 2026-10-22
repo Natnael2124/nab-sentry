@@ -96,7 +96,11 @@ class Watcher:
     scan: Callable[[Path], list[SegmentFile]] = scan_dir
     done: set[Path] = field(default_factory=set)
     failures: dict[Path, int] = field(default_factory=dict)
+    # Hourly housekeeping (retention, V2 task 16.2), called with the current time.
+    maintenance: Callable[[float], object] | None = None
+    maintenance_every_s: float = 3600.0
     _sizes: dict[Path, int] = field(default_factory=dict)
+    _last_maintenance: float | None = None
 
     def poll_once(self) -> list[VideoResult]:
         files = self.scan(self.videos_dir)
@@ -117,7 +121,20 @@ class Watcher:
             self.failures.pop(seg.path, None)
         return results
 
+    def maintain(self) -> None:
+        now = self.clock()
+        if self.maintenance is None:
+            return
+        if self._last_maintenance is not None and now - self._last_maintenance < self.maintenance_every_s:
+            return
+        self._last_maintenance = now
+        try:
+            self.maintenance(now)
+        except Exception:  # noqa: BLE001 - housekeeping must never stop ingest
+            log.exception("watch: maintenance failed")
+
     def run(self, stop: threading.Event) -> None:
         while not stop.is_set():
             self.poll_once()
+            self.maintain()
             stop.wait(self.poll_s)

@@ -693,6 +693,36 @@ class MetadataStore:
                 "AND status = 'complete' ORDER BY start_epoch_ms DESC LIMIT 1", (camera_id,)).fetchone()
         return None if row is None else (row[0], int(row[1]), float(row[2]))
 
+    def videos_ended_before(self, cutoff_epoch_ms: int, camera_ids: Sequence[str]) -> list[tuple[int, str]]:
+        """(video_id, src_path) of videos of the given cameras that ended before the cutoff."""
+        cams = list(camera_ids)
+        if not cams:
+            return []
+        with self._lock:
+            self._conn.execute("CREATE TEMP TABLE IF NOT EXISTS cams(id TEXT PRIMARY KEY)")
+            self._conn.execute("DELETE FROM temp.cams")
+            try:
+                self._conn.executemany("INSERT OR IGNORE INTO temp.cams(id) VALUES (?)", [(c,) for c in cams])
+                rows = self._conn.execute(
+                    "SELECT video_id, src_path FROM videos JOIN temp.cams c ON c.id = videos.camera_id "
+                    "WHERE start_epoch_ms + CAST(duration_s * 1000 AS INTEGER) < ? ORDER BY video_id",
+                    (int(cutoff_epoch_ms),)).fetchall()
+            finally:
+                self._conn.execute("DELETE FROM temp.cams")
+        return [(int(r[0]), r[1]) for r in rows]
+
+    def expire_alert_media(self, cutoff_epoch_ms: int) -> list[str]:
+        """Forget snapshot/clip files of alerts older than the cutoff (rows are kept); returns the
+        file names to delete."""
+        with self._write():
+            rows = self._conn.execute(
+                "SELECT snapshot_path, clip_path FROM alerts WHERE trigger_epoch_ms < ? "
+                "AND (snapshot_path IS NOT NULL OR clip_path IS NOT NULL)", (int(cutoff_epoch_ms),)).fetchall()
+            self._conn.execute(
+                "UPDATE alerts SET snapshot_path = NULL, clip_path = NULL WHERE trigger_epoch_ms < ?",
+                (int(cutoff_epoch_ms),))
+        return [name for row in rows for name in row if name]
+
     def kv_get(self, key: str) -> str | None:
         with self._lock:
             row = self._conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()

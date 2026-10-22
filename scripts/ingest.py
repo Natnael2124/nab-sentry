@@ -281,7 +281,8 @@ def _run(
         pipeline = IngestPipeline(cfg, db, index, encoder, detector, **kw)
         pipeline.reconcile()
         if args.watch:
-            return _watch(cfg, pipeline, segment_lengths(args.cameras), args.poll_s)
+            return _watch(cfg, pipeline, segment_lengths(args.cameras), args.poll_s,
+                          live_camera_ids(args.cameras))
         report = pipeline.ingest_paths(videos)
         total = index.ntotal
         print(f"ingested={report.ingested} failed={report.failed} "
@@ -295,13 +296,32 @@ def _run(
         db.close()
 
 
+def live_camera_ids(path: Path) -> list[str]:
+    """Camera IDs of the Camera_Config (retention only ever touches these cameras)."""
+    from nab_sentry.live.camera_config import CameraConfigError, load_cameras
+
+    if not path.is_file():
+        return []
+    try:
+        return [c.camera_id for c in load_cameras(path)]
+    except CameraConfigError:
+        return []
+
+
 def _watch(cfg: Config, pipeline: IngestPipeline, segment_s_for: Callable[[str], float],
-           poll_s: float) -> int:
+           poll_s: float, live_cameras: Sequence[str] = ()) -> int:
     import threading
 
+    from nab_sentry.ingest.retention import apply_retention
     from nab_sentry.ingest.watch import Watcher
 
-    watcher = Watcher(pipeline, cfg.videos_dir, segment_s_for, poll_s=poll_s)
+    def retention(now: float) -> None:
+        apply_retention(cfg, pipeline.db, pipeline.index, live_cameras, now)
+
+    watcher = Watcher(pipeline, cfg.videos_dir, segment_s_for, poll_s=poll_s,
+                      maintenance=retention if live_cameras else None)
+    if live_cameras:
+        print(f"retention: {cfg.retention_days:g} days of footage for {', '.join(live_cameras)}", flush=True)
     print(f"watching {cfg.videos_dir} for closed Segments; Ctrl+C to stop", flush=True)
     watcher.run(threading.Event())  # Ctrl+C -> KeyboardInterrupt -> main() returns 130
     return EXIT_OK

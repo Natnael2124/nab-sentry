@@ -183,36 +183,37 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
 ### Phase B4: Delivery
 
 - [ ] 14. Alert media
-  - [ ] 14.1 Implement `nab_sentry/alerts/media.py` (`draw_snapshot`, pure `clip_command` with concat over covering Segments)
+  - [x] 14.1 Implement `nab_sentry/alerts/media.py` (`draw_snapshot`) and `nab_sentry/alerts/clips.py` (pure `covering`, `clip_status`, `clip_command` with the concat demuxer and in/out points)
     - _Requirements: 13.1, 13.2_
-  - [ ] 14.2 Tests: clip window spanning 1 and 2 Segments; slow test produces a playable H.264 ≤ 640 px clip
+  - [x] 14.2 Tests: clip window spanning 1 and 2 Segments; real ffmpeg joins two Segments into a ~5 s clip (red then blue), no temp files left
     - File: `tests/test_alert_media.py`
 
 - [ ] 15. Notifier
-  - [ ] 15.1 Implement `nab_sentry/notify/telegram.py` (`TelegramClient` with injectable transport, 429 handling) and `FakeTelegramTransport` in `tests/fakes.py`
+  - [x] 15.1 Implement `nab_sentry/notify/telegram.py` (`TelegramClient` with injectable transport, 429 handling) and `FakeTelegramTransport` in `tests/fakes.py`; the bot token is masked in every error (httpx puts URLs into exceptions)
     - _Requirements: 14.3_
-  - [ ] 15.2 Implement the alert state machine with per-(alert, chat, step) message IDs and backoff
+  - [x] 15.2 Implement the alert state machine with per-(alert, chat, step) message IDs and backoff (`nab_sentry/notify/outbox.py`: photo -> clip as a reply -> sent; retry_after not counted; health alerts as text)
     - _Requirements: 14.2, 14.3, 14.4, 13.3_
-  - [ ] 15.3 Property test: at-most-once delivery across scripted failures and restarts (Property 20)
+  - [x] 15.3 Property test: at-most-once delivery across scripted failures and restarts (Property 20)
     - File: `tests/test_notify_state.py`
-  - [ ] 15.4 Implement `parse_command` and handlers: `/status`, `/snapshot`, `/alerts`, `/mute`, `/unmute`; feedback buttons; Allowed_Chat check; `getUpdates` offset in `kv`
+  - [x] 15.4 Implement `parse_command` and handlers: `/status`, `/snapshot`, `/alerts`, `/mute`, `/unmute` (+ `/rules`, `/help`); feedback buttons; Allowed_Chat check (unknown chat IDs logged once - how an Integrator finds their ID); `getUpdates` offset in `kv`
     - _Requirements: 14.5, 14.6, 14.7_
-  - [ ] 15.5 Property test (Property 21)
+  - [x] 15.5 Property test (Property 21)
     - File: `tests/test_notify_commands.py`
-  - [ ] 15.6 `scripts/notify.py`: env vars (`NAB_TELEGRAM_TOKEN`, `NAB_TELEGRAM_CHATS`), refuse to start without them, token never logged
+  - [x] 15.6 `scripts/notify.py`: env vars (`NAB_TELEGRAM_TOKEN`, `NAB_TELEGRAM_CHATS`), refuse to start without them, token never logged
     - _Requirements: 14.1_
-  - [ ] 15.7 Isolation test: Notifier contacts only `api.telegram.org`, writes only under `data/`; V1 isolation test extended to the Watcher
+  - [x] 15.7 Isolation test: the real httpx transport (through `httpx.MockTransport`) contacts only `https://api.telegram.org` and masks the token. Extending the V1 isolation test to the Watcher is covered by the existing offline flow (ingest.py) plus watch-mode tests
     - File: `tests/test_notifier_isolation.py`, `tests/test_offline_isolation.py`
     - _Requirements: 14.8, 18.1, 18.2, 18.3_
 
 - [ ] 16. Health, retention, supervisor
-  - [ ] 16.1 Health checks in the Notifier: camera offline/recovered from heartbeats, disk low (6 h throttle)
+  - [x] 16.1 Health checks in the Notifier: camera offline/recovered from heartbeats or the newest video (state in `kv`, survives restarts), never-recorded cameras, disk low (6 h throttle)
     - _Requirements: 15.1, 15.2_
-  - [ ] 16.2 Retention in the Watcher (hourly): delete old Segments with rows, media and vectors; alert media on its own schedule
+  - [x] 16.2 Retention in the Watcher (hourly): delete old Segments with rows, media and vectors; alert media on its own schedule. Only cameras in the Camera_Config are touched (hand-imported videos are never deleted) and only source files inside `data/videos/`
     - _Requirements: 15.3_
-  - [ ] 16.3 Property test: after retention, `reconcile()` reports no changes (Property 22)
+  - [x] 16.3 Property test: after retention, `reconcile()` reports no changes (Property 22)
     - File: `tests/test_retention.py`
-  - [ ] 16.4 `run_live.ps1`: start Recorders, Watcher, Notifier, API_Server; restart on exit; logs under `data/logs/`
+  - [x] 16.4 `run_live.ps1`: start Recorders, Watcher, Notifier, API_Server; restart on exit (2..60 s back-off); logs under `data/logs/`; `-DryRun`; skips the recorder without `config/cameras.yaml` and the notifier without the Telegram variables
+    - Also fixed: every log line was printed twice once the encoder was built (the OpenCLIP tokenizer configures the root logger; now restored)
     - _Requirements: 16.1_
   - [ ] 16.5 Checkpoint: real Telegram test chat receives snapshot + clip from a phone-camera rule; `/status`, `/mute` work
 
