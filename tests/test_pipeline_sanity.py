@@ -115,6 +115,7 @@ def test_reingest_and_duplicate_content_are_skipped(env: Env, caplog) -> None:
     before = env.db.counts()
 
     caplog.set_level(logging.INFO, logger="nab_sentry")
+    caplog.clear()  # only the second run's messages (the logger may already be at INFO)
     second = env.pipeline().ingest_paths([env.videos_dir])
     assert [r.status for r in second.results] == ["already_indexed"] * 2
     assert env.db.counts() == before
