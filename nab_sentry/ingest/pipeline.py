@@ -27,6 +27,7 @@ also gets for free); :meth:`IngestPipeline.reconcile` repairs that state on the 
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -54,6 +55,9 @@ from nab_sentry.logging_setup import get_logger
 from nab_sentry.store.db import MetadataStore, NewFrame, NewTrackObs, NewVector, NewVideo
 from nab_sentry.store.vector_index import VectorIndex
 from nab_sentry.alerts.media import ALERT_FILE_RE, draw_snapshot, snapshot_name
+from nab_sentry.describe.activity import line_crossings, summary, zone_seconds
+from nab_sentry.describe.attributes import AttributeTagger, phrase
+from nab_sentry.live.camera_config import CameraSpec
 from nab_sentry.rules.config import Rule
 from nab_sentry.rules.engine import Firing, Obs, RuleEngine
 from nab_sentry.rules.geometry import anchor
@@ -263,6 +267,7 @@ class IngestPipeline:
         tracker: TrackSink | None = None,
         rules: Sequence[Rule] = (),
         rois: dict[str, tuple[float, float, float, float]] | None = None,
+        cameras: Sequence[CameraSpec] = (),
     ) -> None:
         self.cfg = cfg
         self.db = db
@@ -277,6 +282,9 @@ class IngestPipeline:
         self.rules = list(rules)
         # camera_id -> motion ROI from the Camera_Config (V2 Requirement 3.1); none = whole frame
         self.rois = dict(rois or {})
+        # Camera_Config entries (labels, zones, lines) for the activity log (Step 3)
+        self.cameras = {c.camera_id: c for c in cameras}
+        self._tagger: AttributeTagger | None = None
         self._engines: dict[str, RuleEngine] = {}
         self.open_source = open_source
         self.start_playback = start_playback or (
@@ -634,8 +642,48 @@ class IngestPipeline:
                 log.warning("alert: %s on %s at %.1f s (%s)%s", pa.rule.id, camera_id, pa.offset_s,
                             pa.det_class, " [muted]" if muted else "")
         for rec in records:
+            if rec.key in ids:
+                self._update_activity(camera_id, ids[rec.key], rec.cls, st)
+        for rec in records:
             if rec.ended:
                 ids.pop(rec.key, None)  # no more observations will come for it
+
+    def _update_activity(self, camera_id: str, track_id: int, det_class: str, st: _VideoState) -> None:
+        """(Re)write the track's activity row from its whole stored history (Requirement 19)."""
+        pts = self.db.track_points(track_id)
+        if not pts:
+            return
+        ground = [(ms / 1000, ((x1 + x2) / 2 / w, y2 / h)) for ms, x1, y1, x2, y2, w, h in pts]
+        spec = self.cameras.get(camera_id)
+        zones = dict(spec.zones) if spec else {}
+        lines = dict(spec.lines) if spec else {}
+        zsec = zone_seconds(ground, zones)
+        cross = line_crossings(ground, lines)
+        crops = self.db.track_crops(track_id)
+        tags: dict = {}
+        best = max(crops, key=lambda c: c[2] * c[1])[0] if crops else None
+        if crops and self.encoder is not None and hasattr(self.encoder, "encode_text"):
+            if self._tagger is None:
+                self._tagger = AttributeTagger(self.encoder.encode_text)
+            vecs = [v for v in (self._vector(vid, st) for vid, _c, _a in crops) if v is not None]
+            tags = self._tagger.tag(det_class, vecs)
+        label = (spec.label if spec else None) or self.db.camera_label(camera_id) or camera_id
+        text = summary(ground[0][0], ground[-1][0], label, phrase(det_class, tags), zsec, cross)
+        self.db.upsert_activity(
+            track_id, camera_id, det_class, pts[0][0], pts[-1][0], json.dumps(zsec),
+            json.dumps([{**c, "t": round(c["t"], 2)} for c in cross]),
+            json.dumps({k: list(v) for k, v in tags.items()}), best, text)
+
+    def _vector(self, vector_id: int, st: _VideoState) -> np.ndarray | None:
+        """A stored embedding: staged in this video's transaction, or already in the index."""
+        try:
+            return st.staged_vecs[st.staged_ids.index(vector_id)]
+        except ValueError:
+            pass
+        try:
+            return np.asarray(self.index.faiss_index.reconstruct(int(vector_id)), np.float32)
+        except Exception:  # noqa: BLE001 - e.g. removed by retention meanwhile
+            return None
 
     def _engine(self, camera_id: str) -> RuleEngine | None:
         """This camera's RuleEngine (created once, cooldowns seeded from stored alerts)."""

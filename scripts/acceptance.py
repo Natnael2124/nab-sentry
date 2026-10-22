@@ -110,7 +110,8 @@ def build(scene: Path, run: Path, rules: bool = True):
     db = MetadataStore(cfg.db_path)
     pipe = IngestPipeline(cfg, db, VectorIndex(), default_encoder_factory(cfg, files),
                           default_detector_factory(cfg, files), tracker=LiveTracks.from_config(cfg),
-                          rules=rule_list, rois={c.camera_id: c.roi for c in cameras if c.roi})
+                          rules=rule_list, rois={c.camera_id: c.roi for c in cameras if c.roi},
+                          cameras=cameras)
     return cfg, db, pipe, cameras, rule_list
 
 

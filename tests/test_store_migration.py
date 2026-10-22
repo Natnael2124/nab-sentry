@@ -84,7 +84,7 @@ def test_property_19_migration_keeps_v1_rows_and_is_idempotent(data):
             assert db.schema_version() == int(SCHEMA_VERSION)
             assert dump(c) == before
             assert c.execute("SELECT COUNT(*) FROM vectors WHERE track_id IS NOT NULL").fetchone()[0] == 0
-            assert {"tracks", "track_obs", "alerts", "alert_messages", "rule_mutes", "kv"} <= {r[0] for r in c.execute(
+            assert {"tracks", "track_obs", "alerts", "alert_messages", "rule_mutes", "kv", "activities"} <= {r[0] for r in c.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'")}
             assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert c.execute("PRAGMA foreign_key_check").fetchall() == []

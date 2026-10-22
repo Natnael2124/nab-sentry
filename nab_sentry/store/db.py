@@ -28,7 +28,7 @@ if TYPE_CHECKING:  # avoid an import cycle once engine.py imports MetadataStore 
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 EMBED_MODEL = "ViT-B-32/laion2b_s34b_b79k"
 EMBED_DIM = "512"
 
@@ -165,6 +165,26 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         )""",
         "CREATE TABLE rule_mutes (rule_id TEXT PRIMARY KEY, until_epoch_ms INTEGER NOT NULL)",
         "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    ),
+    # v3 -> v4: the activity log (Step 3, Requirement 19): one row per confirmed track, kept up
+    # to date as the track grows; deleted with its track.
+    3: (
+        """CREATE TABLE activities (
+            activity_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id       INTEGER NOT NULL UNIQUE REFERENCES tracks(track_id) ON DELETE CASCADE,
+            camera_id      TEXT    NOT NULL REFERENCES cameras(camera_id),
+            det_class      TEXT    NOT NULL,
+            first_epoch_ms INTEGER NOT NULL,
+            last_epoch_ms  INTEGER NOT NULL CHECK (last_epoch_ms >= first_epoch_ms),
+            zones          TEXT    NOT NULL DEFAULT '{}',
+            crossings      TEXT    NOT NULL DEFAULT '[]',
+            tags           TEXT    NOT NULL DEFAULT '{}',
+            best_vector_id INTEGER REFERENCES vectors(vector_id) ON DELETE SET NULL,
+            summary        TEXT    NOT NULL,
+            vlm_text       TEXT,
+            updated_at     TEXT    NOT NULL
+        )""",
+        "CREATE INDEX idx_activities_camera_time ON activities(camera_id, first_epoch_ms)",
     ),
 }
 
@@ -732,6 +752,76 @@ class MetadataStore:
         with self._write():
             self._conn.execute("INSERT INTO kv(key, value) VALUES (?, ?) "
                                "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+
+    # -- activities (schema v4) ---------------------------------------------------------------
+
+    def track_points(self, track_id: int) -> list[tuple[int, int, int, int, int, int, int]]:
+        """(abs_epoch_ms, x1, y1, x2, y2, width, height) of every observation, in time order."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT o.abs_epoch_ms, o.x1, o.y1, o.x2, o.y2, v.width, v.height FROM track_obs o "
+                "JOIN videos v USING (video_id) WHERE o.track_id = ? ORDER BY o.abs_epoch_ms",
+                (int(track_id),)).fetchall()
+        return [tuple(int(x) for x in r) for r in rows]  # type: ignore[misc]
+
+    def track_crops(self, track_id: int) -> list[tuple[int, float, int]]:
+        """(vector_id, det_conf, box area) of the crop vectors linked to a track."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT vector_id, det_conf, (x2 - x1) * (y2 - y1) FROM vectors "
+                "WHERE track_id = ? AND kind = 'crop' ORDER BY vector_id", (int(track_id),)).fetchall()
+        return [(int(r[0]), float(r[1]), int(r[2])) for r in rows]
+
+    def upsert_activity(self, track_id: int, camera_id: str, det_class: str, first_epoch_ms: int,
+                        last_epoch_ms: int, zones: str, crossings: str, tags: str,
+                        best_vector_id: int | None, summary: str) -> int:
+        with self._write():
+            self._conn.execute(
+                "INSERT INTO activities(track_id, camera_id, det_class, first_epoch_ms, last_epoch_ms, "
+                "zones, crossings, tags, best_vector_id, summary, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(track_id) DO UPDATE SET "
+                "first_epoch_ms = excluded.first_epoch_ms, last_epoch_ms = excluded.last_epoch_ms, "
+                "zones = excluded.zones, crossings = excluded.crossings, tags = excluded.tags, "
+                "best_vector_id = excluded.best_vector_id, summary = excluded.summary, "
+                "updated_at = excluded.updated_at",
+                (int(track_id), camera_id, det_class, int(first_epoch_ms), int(last_epoch_ms), zones,
+                 crossings, tags, best_vector_id, summary, _now_iso()))
+            (aid,) = self._conn.execute("SELECT activity_id FROM activities WHERE track_id = ?",
+                                        (int(track_id),)).fetchone()
+        return int(aid)
+
+    ACTIVITY_COLUMNS = ("activity_id", "track_id", "camera_id", "det_class", "first_epoch_ms",
+                        "last_epoch_ms", "zones", "crossings", "tags", "best_vector_id", "summary",
+                        "vlm_text", "thumb_path", "video_id", "offset_s", "x1", "y1", "x2", "y2")
+
+    def activities_between(self, from_epoch_ms: int, to_epoch_ms: int,
+                           camera_id: str | None = None) -> list[dict]:
+        """Activities that started in the window (with their best crop's frame), time order."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT a.activity_id, a.track_id, a.camera_id, a.det_class, a.first_epoch_ms, "
+                "a.last_epoch_ms, a.zones, a.crossings, a.tags, a.best_vector_id, a.summary, a.vlm_text, "
+                "f.thumb_path, f.video_id, f.offset_s, v.x1, v.y1, v.x2, v.y2 FROM activities a "
+                "LEFT JOIN vectors v ON v.vector_id = a.best_vector_id "
+                "LEFT JOIN frames f ON f.frame_id = v.frame_id "
+                "WHERE a.first_epoch_ms >= ? AND a.first_epoch_ms < ? AND (? IS NULL OR a.camera_id = ?) "
+                "ORDER BY a.first_epoch_ms",
+                (int(from_epoch_ms), int(to_epoch_ms), camera_id, camera_id)).fetchall()
+        return [dict(zip(self.ACTIVITY_COLUMNS, r)) for r in rows]
+
+    def get_activity(self, activity_id: int) -> dict | None:
+        with self._lock:
+            row = self._conn.execute("SELECT first_epoch_ms FROM activities WHERE activity_id = ?",
+                                     (int(activity_id),)).fetchone()
+        if row is None:
+            return None
+        rows = [a for a in self.activities_between(row[0], row[0] + 1) if a["activity_id"] == int(activity_id)]
+        return rows[0] if rows else None
+
+    def set_activity_vlm(self, activity_id: int, text: str) -> None:
+        with self._write():
+            self._conn.execute("UPDATE activities SET vlm_text = ? WHERE activity_id = ?",
+                               (text, int(activity_id)))
 
     def referenced_alert_files(self) -> set[str]:
         with self._lock:

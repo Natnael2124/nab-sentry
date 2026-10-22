@@ -281,6 +281,9 @@ def _run(
         rois = camera_rois(args.cameras)
         if rois:
             kw["rois"] = rois
+        cams = camera_specs(args.cameras)
+        if cams:
+            kw["cameras"] = cams
         pipeline = IngestPipeline(cfg, db, index, encoder, detector, **kw)
         pipeline.reconcile()
         if args.watch:
@@ -297,6 +300,18 @@ def _run(
         return EXIT_OK
     finally:
         db.close()
+
+
+def camera_specs(path: Path) -> list:
+    """The Camera_Config entries (labels, zones and lines for the activity log); [] if absent."""
+    from nab_sentry.live.camera_config import CameraConfigError, load_cameras
+
+    if not path.is_file():
+        return []
+    try:
+        return load_cameras(path)
+    except CameraConfigError:
+        return []
 
 
 def camera_rois(path: Path) -> dict[str, tuple[float, float, float, float]]:
