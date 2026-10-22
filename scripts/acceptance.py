@@ -66,20 +66,26 @@ IDLE_MARGIN_S = 3.0
 
 
 def match_alerts(expected: Sequence[dict], actual: Sequence[dict], tol: float) -> dict:
-    """Greedy one-to-one matching per rule by time distance (<= ``tol``). ``expected`` and
-    ``actual`` items have ``rule`` and ``t`` (seconds from the footage start)."""
+    """Maximum one-to-one matching per rule within ``tol`` seconds. ``expected`` and ``actual``
+    items have ``rule`` and ``t`` (seconds from the footage start).
+
+    Every expected alert accepts the same window ``[e - tol, e + tol]``, so taking expected
+    alerts in time order, each with the earliest unused actual alert inside its window, gives
+    the most matches (closest-pair-first does not: 0, 2 vs 4, 6 with tol 5 would match one)."""
     per_rule: dict[str, dict] = {}
     for rule in sorted({a["rule"] for a in expected} | {a["rule"] for a in actual}):
         exp = sorted(a["t"] for a in expected if a["rule"] == rule)
         act = sorted(a["t"] for a in actual if a["rule"] == rule)
-        pairs = sorted((abs(e - a), i, j) for i, e in enumerate(exp) for j, a in enumerate(act) if abs(e - a) <= tol)
         used_e, used_a, delays = set(), set(), []
-        for _d, i, j in pairs:
-            if i in used_e or j in used_a:
-                continue
-            used_e.add(i)
-            used_a.add(j)
-            delays.append(act[j] - exp[i])
+        j = 0
+        for i, e in enumerate(exp):
+            while j < len(act) and act[j] < e - tol:
+                j += 1
+            if j < len(act) and act[j] <= e + tol:
+                used_e.add(i)
+                used_a.add(j)
+                delays.append(act[j] - exp[i])
+                j += 1
         per_rule[rule] = {"expected": len(exp), "actual": len(act), "tp": len(used_e),
                           "fn": len(exp) - len(used_e), "fp": len(act) - len(used_a),
                           "missed_at": [round(exp[i], 1) for i in range(len(exp)) if i not in used_e],

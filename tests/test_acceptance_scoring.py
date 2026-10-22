@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +37,7 @@ def test_match_alerts_counts_and_delays():
 
 
 @given(st.lists(st.tuples(st.sampled_from("ab"), st.floats(0, 500)), max_size=12), st.floats(-4, 4))
+@example([("a", 0.0), ("a", 2.0)], 4.0)  # closest-pair-first matched only one
 def test_shifted_copy_is_a_perfect_match(items, shift):
     exp = [{"rule": r, "t": t} for r, t in items]
     act = [{"rule": r, "t": t + shift} for r, t in items]
