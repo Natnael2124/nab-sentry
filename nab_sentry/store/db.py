@@ -28,7 +28,7 @@ if TYPE_CHECKING:  # avoid an import cycle once engine.py imports MetadataStore 
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 EMBED_MODEL = "ViT-B-32/laion2b_s34b_b79k"
 EMBED_DIM = "512"
 
@@ -126,6 +126,46 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         "ALTER TABLE vectors ADD COLUMN track_id INTEGER REFERENCES tracks(track_id) ON DELETE SET NULL",
         "CREATE INDEX idx_vectors_track ON vectors(track_id)",
     ),
+    # v2 -> v3: the alert outbox (V2 Requirements 12.5, 14, 15), written by the Watcher inside
+    # the Segment's transaction and delivered by the Notifier.
+    2: (
+        """CREATE TABLE alerts (
+            alert_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind                  TEXT    NOT NULL
+                CHECK (kind IN ('rule', 'camera_offline', 'camera_recovered', 'disk_low')),
+            rule_id               TEXT,
+            rule_name             TEXT,
+            severity              TEXT    CHECK (severity IN ('immediate', 'verify')),
+            camera_id             TEXT    REFERENCES cameras(camera_id),
+            track_id              INTEGER REFERENCES tracks(track_id) ON DELETE SET NULL,
+            video_id              INTEGER REFERENCES videos(video_id) ON DELETE SET NULL,
+            trigger_offset_s      REAL,
+            trigger_epoch_ms      INTEGER NOT NULL,
+            det_class             TEXT,
+            n_tracks              INTEGER,
+            state                 TEXT    NOT NULL
+                CHECK (state IN ('pending', 'photo_sent', 'sent', 'failed', 'suppressed')),
+            attempts              INTEGER NOT NULL DEFAULT 0,
+            next_attempt_epoch_ms INTEGER NOT NULL DEFAULT 0,
+            snapshot_path         TEXT,
+            clip_path             TEXT,
+            note                  TEXT,
+            feedback              TEXT    CHECK (feedback IN ('real', 'false')),
+            created_at            TEXT    NOT NULL,
+            CHECK ((kind = 'rule') = (rule_id IS NOT NULL))
+        )""",
+        "CREATE INDEX idx_alerts_state ON alerts(state, next_attempt_epoch_ms)",
+        "CREATE INDEX idx_alerts_rule ON alerts(rule_id, camera_id, trigger_epoch_ms)",
+        """CREATE TABLE alert_messages (
+            alert_id   INTEGER NOT NULL REFERENCES alerts(alert_id) ON DELETE CASCADE,
+            chat_id    INTEGER NOT NULL,
+            step       TEXT    NOT NULL CHECK (step IN ('photo', 'clip', 'text')),
+            message_id INTEGER NOT NULL,
+            PRIMARY KEY (alert_id, chat_id, step)
+        )""",
+        "CREATE TABLE rule_mutes (rule_id TEXT PRIMARY KEY, until_epoch_ms INTEGER NOT NULL)",
+        "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    ),
 }
 
 
@@ -206,6 +246,24 @@ class NewTrackObs:
     conf: float
     high: bool
     box: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class NewAlert:
+    kind: str  # rule | camera_offline | camera_recovered | disk_low
+    trigger_epoch_ms: int
+    state: str = "pending"
+    rule_id: str | None = None
+    rule_name: str | None = None
+    severity: str | None = None
+    camera_id: str | None = None
+    track_id: int | None = None
+    video_id: int | None = None
+    trigger_offset_s: float | None = None
+    det_class: str | None = None
+    n_tracks: int | None = None
+    snapshot_path: str | None = None
+    note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -507,6 +565,54 @@ class MetadataStore:
                 "DELETE FROM tracks WHERE NOT EXISTS "
                 "(SELECT 1 FROM track_obs o WHERE o.track_id = tracks.track_id)")
             return int(cur.rowcount)
+
+    # -- alerts (schema v3) -----------------------------------------------------------------------
+
+    def insert_alert(self, a: NewAlert) -> int:
+        with self._write():
+            cur = self._conn.execute(
+                "INSERT INTO alerts(kind, rule_id, rule_name, severity, camera_id, track_id, video_id, "
+                "trigger_offset_s, trigger_epoch_ms, det_class, n_tracks, state, snapshot_path, note, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (a.kind, a.rule_id, a.rule_name, a.severity, a.camera_id, a.track_id, a.video_id,
+                 a.trigger_offset_s, int(a.trigger_epoch_ms), a.det_class, a.n_tracks, a.state,
+                 a.snapshot_path, a.note, _now_iso()),
+            )
+            return int(cur.lastrowid)
+
+    def last_rule_fires(self, camera_id: str) -> dict[str, int]:
+        """rule_id -> latest trigger_epoch_ms of its alerts on ``camera_id`` (cooldown seed)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT rule_id, MAX(trigger_epoch_ms) FROM alerts "
+                "WHERE kind = 'rule' AND camera_id = ? GROUP BY rule_id", (camera_id,)).fetchall()
+        return {r[0]: int(r[1]) for r in rows}
+
+    def active_mutes(self, now_epoch_ms: int) -> dict[str, int]:
+        """rule_id -> muted-until epoch ms, for mutes still running at ``now_epoch_ms``."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT rule_id, until_epoch_ms FROM rule_mutes WHERE until_epoch_ms > ?",
+                (int(now_epoch_ms),)).fetchall()
+        return {r[0]: int(r[1]) for r in rows}
+
+    def set_mute(self, rule_id: str, until_epoch_ms: int | None) -> None:
+        """Mute ``rule_id`` until the given time; ``None`` removes the mute."""
+        with self._write():
+            if until_epoch_ms is None:
+                self._conn.execute("DELETE FROM rule_mutes WHERE rule_id = ?", (rule_id,))
+            else:
+                self._conn.execute(
+                    "INSERT INTO rule_mutes(rule_id, until_epoch_ms) VALUES (?, ?) "
+                    "ON CONFLICT(rule_id) DO UPDATE SET until_epoch_ms = excluded.until_epoch_ms",
+                    (rule_id, int(until_epoch_ms)))
+
+    def referenced_alert_files(self) -> set[str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT snapshot_path FROM alerts WHERE snapshot_path IS NOT NULL "
+                "UNION SELECT clip_path FROM alerts WHERE clip_path IS NOT NULL").fetchall()
+        return {r[0] for r in rows}
 
     def finalize_video(
         self, video_id: int, *, sampled: int, passed: int, duration_s: float, playback_path: str

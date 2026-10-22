@@ -1,4 +1,4 @@
-"""Schema migration v1 -> v2 (V2 Requirement 11.1, task 11.2): Property 19.
+"""Schema migration v1 -> current (v3) (V2 Requirement 11.1, task 11.2): Property 19.
 
 Migrating any v1 database keeps every v1 row, adds an all-NULL ``vectors.track_id`` and the
 track tables, passes SQLite's integrity and foreign-key checks, and is idempotent. A database
@@ -81,10 +81,10 @@ def test_property_19_migration_keeps_v1_rows_and_is_idempotent(data):
         db = MetadataStore(path)
         try:
             c = db._conn
-            assert db.schema_version() == int(SCHEMA_VERSION) == 2
+            assert db.schema_version() == int(SCHEMA_VERSION)
             assert dump(c) == before
             assert c.execute("SELECT COUNT(*) FROM vectors WHERE track_id IS NOT NULL").fetchone()[0] == 0
-            assert {"tracks", "track_obs"} <= {r[0] for r in c.execute(
+            assert {"tracks", "track_obs", "alerts", "alert_messages", "rule_mutes", "kv"} <= {r[0] for r in c.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table'")}
             assert c.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert c.execute("PRAGMA foreign_key_check").fetchall() == []
@@ -93,7 +93,7 @@ def test_property_19_migration_keeps_v1_rows_and_is_idempotent(data):
             db.close()
         db2 = MetadataStore(path)  # reopening is a no-op too
         try:
-            assert db2.schema_version() == 2 and dump(db2._conn) == before
+            assert db2.schema_version() == int(SCHEMA_VERSION) and dump(db2._conn) == before
         finally:
             db2.close()
 
@@ -101,7 +101,7 @@ def test_property_19_migration_keeps_v1_rows_and_is_idempotent(data):
 def test_new_database_is_created_at_current_version(tmp_path: Path):
     db = MetadataStore(tmp_path / "new.db")
     try:
-        assert db.schema_version() == 2
+        assert db.schema_version() == int(SCHEMA_VERSION)
         assert [r[1] for r in db._conn.execute("PRAGMA table_info(vectors)")][-1] == "track_id"
     finally:
         db.close()
@@ -111,7 +111,7 @@ def test_newer_database_is_refused(tmp_path: Path):
     path = tmp_path / "future.db"
     MetadataStore(path).close()
     con = sqlite3.connect(path)
-    con.execute("UPDATE schema_meta SET value = '3' WHERE key = 'schema_version'")
+    con.execute("UPDATE schema_meta SET value = ? WHERE key = 'schema_version'", (str(int(SCHEMA_VERSION) + 1),))
     con.commit()
     con.close()
     with pytest.raises(SchemaVersionError, match="newer"):
@@ -140,7 +140,7 @@ def test_two_processes_opening_an_old_database_migrate_it_once(tmp_path: Path):
     try:
         assert errors == []
         c = stores[0]._conn
-        assert stores[0].schema_version() == 2
+        assert stores[0].schema_version() == int(SCHEMA_VERSION)
         # The ALTER TABLE ran exactly once (a second run would have failed: duplicate column).
         assert [r[1] for r in c.execute("PRAGMA table_info(vectors)")].count("track_id") == 1
     finally:

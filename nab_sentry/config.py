@@ -105,6 +105,8 @@ class Config:
     logs_dir: Path = field(init=False)
     videos_dir: Path = field(init=False)
     query_log_path: Path = field(init=False)
+    alerts_dir: Path = field(init=False)  # alert snapshots and clips (V2)
+    live_dir: Path = field(init=False)  # recorder heartbeats, camera snapshots (V2)
 
     def __post_init__(self) -> None:
         set_ = object.__setattr__  # frozen dataclass
@@ -121,6 +123,8 @@ class Config:
         set_(self, "logs_dir", data / "logs")
         set_(self, "videos_dir", data / "videos")
         set_(self, "query_log_path", data / "logs" / "query_log.jsonl")
+        set_(self, "alerts_dir", data / "alerts")
+        set_(self, "live_dir", data / "live")
 
     def validate(self) -> list[ConfigIssue]:
         """Return one ConfigIssue per out-of-range, NaN, non-numeric, or missing field."""

@@ -164,17 +164,20 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
     - File: `tests/test_geometry.py`
 
 - [ ] 13. Rules
-  - [ ] 13.1 Implement `rules.yaml` loader with validation against Camera_Config
+  - [x] 13.1 Implement `rules.yaml` loader with validation against Camera_Config (`nab_sentry/rules/config.py`, `config/rules.example.yaml`; `ingest.py --rules`, a bad rule exits 2 before models load)
     - _Requirements: 12.6_
-  - [ ] 13.2 Implement `in_schedule` and pure `evaluate` (enter, dwell, cross, count; debounce; once per track; cooldown)
+  - [x] 13.2 Implement `in_schedule` and pure `evaluate` (enter, dwell, cross, count; debounce; once per track; cooldown) (`nab_sentry/rules/engine.py`)
+    - Decisions: a track held back by the cooldown is not consumed (it can fire once the cooldown is over); a missed frame changes nothing, an observation outside the zone resets progress; `cross` debounce counts observations on the new side, measured from the last off-line position; `count` fires once per episode; `start == end` in a schedule is 24 h from `start`. Found by the tests: a dwell timer treated an entry time of 0.0 as missing
     - _Requirements: 12.3, 12.4_
-  - [ ] 13.3 Property tests (Properties 15, 16, 17)
+  - [x] 13.3 Property tests (Properties 15, 16, 17) (`tests/test_rules.py`, 27 tests)
     - File: `tests/test_rules.py`
-  - [ ] 13.4 Pipeline: evaluate rules per Track_Rate frame; write `alerts` rows (`pending` / `suppressed` if muted) and snapshot JPEGs inside the Segment transaction; cooldown from `alerts`
+  - [x] 13.4 Pipeline: evaluate rules per Track_Rate frame; write `alerts` rows (`pending` / `suppressed` if muted) and snapshot JPEGs inside the Segment transaction; cooldown from `alerts`
+    - Schema v3 migration adds `alerts`, `alert_messages`, `rule_mutes`, `kv`. Snapshots (`nab_sentry/alerts/media.py`) are written when the rule fires (frame in memory) and recorded for rollback; alert rows are written with the video's track rows so `track_id` is known. Muted firings are stored `suppressed` and still start the cooldown. The camera's RuleEngine is snapshotted per video and restored on rollback; cooldowns are seeded from stored alerts after a restart
+    - Real models, first 120 s of the Compilation_Video, whole-frame rules with a 30 s cooldown: 4 person + 4 vehicle alerts, all >= 30 s apart, each linked to its track; snapshots checked by eye
     - _Requirements: 12.5, 14.7_
-  - [ ] 13.5 Property test: outbox atomicity under failure at every checkpoint (Property 18)
+  - [x] 13.5 Property test: outbox atomicity under failure at every checkpoint (Property 18): failure then retry == clean run; no alert row or file left by the failed attempt
     - File: `tests/test_pipeline_alerts.py`
-  - [ ] 13.6 `reconcile()` removes unreferenced alert media
+  - [x] 13.6 `reconcile()` removes unreferenced alert media (files matching the alert naming pattern only)
     - _Requirements: 11.2_
 
 ### Phase B4: Delivery

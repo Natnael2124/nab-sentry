@@ -26,6 +26,11 @@ touched, so each passed frame also gets ``crop`` vectors with class, confidence,
 (Requirements 4.5, 5.2). A missing or unreadable ONNX file exits 6 with its path and the
 Model_Fetcher command (Requirement 4.6). ``--set enable_detector=false`` gives frame-only ingest.
 
+Watch rules (V2): when ``config/rules.yaml`` (``--rules``) exists it is loaded and checked
+against ``config/cameras.yaml`` (``--cameras``); a bad rule exits 2 before any model loads.
+Rules fire inside each video's transaction and write ``alerts`` rows plus snapshots under
+``data/alerts/`` for the Notifier.
+
 Tracking (V2): with ``enable_tracking`` (default) and the detector on, a
 :class:`~nab_sentry.track.live.LiveTracks` runs the detector at ``track_rate`` while a scene is
 active and tracks objects per camera, across consecutive Segments in watch mode.
@@ -113,7 +118,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cameras", type=Path, default=_ROOT / "config" / "cameras.yaml",
                    help="Camera_Config for per-camera segment lengths (watch mode)")
     p.add_argument("--poll-s", type=float, default=1.0, help="watch-mode poll interval")
+    p.add_argument("--rules", type=Path, default=_ROOT / "config" / "rules.yaml",
+                   help="watch rules (used when the file exists; needs --cameras)")
     return p
+
+
+def load_rule_set(rules_path: Path, cameras_path: Path) -> list:
+    """Rules from ``rules_path`` checked against the Camera_Config; [] when the file is absent.
+    Raises ``RulesConfigError`` / ``CameraConfigError`` naming every bad field."""
+    if not rules_path.is_file():
+        return []
+    from nab_sentry.live.camera_config import load_cameras
+    from nab_sentry.rules.config import load_rules
+
+    return load_rules(rules_path, load_cameras(cameras_path))
 
 
 def segment_lengths(path: Path) -> Callable[[str], float]:
@@ -199,6 +217,14 @@ def _run(
         return EXIT_CONFIG
 
     setup_logging(cfg.logs_dir)
+    from nab_sentry.live.camera_config import CameraConfigError
+    from nab_sentry.rules.config import RulesConfigError
+
+    try:
+        rules = load_rule_set(args.rules, args.cameras)
+    except (RulesConfigError, CameraConfigError) as exc:
+        _err(str(exc))
+        return EXIT_CONFIG
     try:
         files = require_models(cfg.models_dir, logger=log)
     except SystemExit as exc:  # require_models prints the failing files + fetch command
@@ -247,6 +273,11 @@ def _run(
 
             # One instance for the whole run: in watch mode tracks continue across Segments.
             kw["tracker"] = LiveTracks.from_config(cfg)
+            if rules:
+                kw["rules"] = rules
+                log.info("watch rules: %s", ", ".join(f"{r.id} ({r.camera})" for r in rules))
+        elif rules:
+            log.warning("%d watch rule(s) ignored: rules need the detector and tracking", len(rules))
         pipeline = IngestPipeline(cfg, db, index, encoder, detector, **kw)
         pipeline.reconcile()
         if args.watch:

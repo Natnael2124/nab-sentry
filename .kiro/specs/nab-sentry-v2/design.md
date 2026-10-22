@@ -185,7 +185,7 @@ rules:
 
 `evaluate(rule, obs, state, now_local, last_alert_epoch) -> (fires: bool, state')` is pure. `state` per (rule, track): consecutive qualifying count, zone entry time (dwell), last anchor (cross), fired flag. `count` uses the set of confirmed tracks currently qualifying. Schedule check uses the frame's Absolute_Timestamp converted with `to_aware_local` (DST-safe), window `start ≤ t < end` or wrapped. Cooldown: `last_alert_epoch` comes from `SELECT max(trigger_epoch_ms) FROM alerts WHERE rule_id=? AND camera_id=? AND state != 'suppressed'` plus alerts staged in the current transaction.
 
-Mutes are read from the `rule_mutes` table at each Segment start; an Alert fired while muted gets state `suppressed`.
+Mutes are read from `rule_mutes` when the video's alerts are written; an Alert fired while muted gets state `suppressed`. Muted firings still start the cooldown (the engine knows nothing about mutes), so a mute never ends in a burst of alerts. The engine state per camera lives in the Watcher, is snapshotted per video and restored on rollback; after a restart cooldowns are seeded from the latest stored alert per rule.
 
 ### alerts/media.py
 

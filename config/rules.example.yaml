@@ -1,0 +1,41 @@
+# Watch rules example. Copy to config/rules.yaml and edit; cameras, zones and lines refer to
+# config/cameras.yaml. Rules run during ingest (scripts\ingest.py --watch) and write alerts that
+# scripts\notify.py delivers to Telegram.
+#
+# trigger:
+#   {type: enter}               a tracked object is in the zone (debounce observations in a row)
+#   {type: dwell, seconds: 20}  ... and has stayed there at least this long
+#   {type: count, min: 3}       at least this many tracked objects in the zone at once
+#   {type: cross}               crossed the line; direction in = to the left of the arrow drawn by
+#                               scripts\snapshot.py (from the line's first point to its second),
+#                               out = to its right, any = either
+# schedule (optional, local time): a window whose end is not after its start runs past midnight
+# and belongs to the day it starts on (mon 22:00-06:00 = Monday 22:00 to Tuesday 06:00).
+# debounce (default 2): consecutive qualifying observations at the tracking rate (3 fps).
+# cooldown_s (default 300): no second alert of the same rule on the camera within this time.
+# severity: immediate (send at once) | verify (Step 3: check with the VLM first; for now = immediate)
+rules:
+  - id: yard-night
+    name: Person in the yard at night
+    camera: CAM01
+    zone: yard
+    classes: [person]
+    schedule: {days: [mon, tue, wed, thu, fri, sat, sun], start: "22:00", end: "06:00"}
+    trigger: {type: enter}
+    cooldown_s: 300
+    severity: immediate
+
+  - id: car-waiting
+    name: Vehicle waiting in the yard
+    camera: CAM01
+    zone: yard
+    classes: [car, truck]
+    trigger: {type: dwell, seconds: 120}
+
+  - id: gate-in
+    name: Someone came in through the gate
+    camera: CAM01
+    line: gate-line
+    direction: in
+    classes: [person, car, motorcycle]
+    trigger: {type: cross}
