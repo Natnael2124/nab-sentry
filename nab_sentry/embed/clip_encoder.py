@@ -18,6 +18,7 @@ skipping weight loading. ``model.encode_*`` may return torch tensors or NumPy ar
 from __future__ import annotations
 
 import contextlib
+import logging
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol, Sequence, TypeVar
 
@@ -124,6 +125,22 @@ def _check_weights_readable(path: Path) -> None:
         raise ModelMissingError(path, "unreadable") from exc
 
 
+@contextlib.contextmanager
+def _keep_root_logging() -> Iterator[None]:
+    """Undo root-logger changes made while building the model: something in the OpenCLIP stack
+    configures the root logger (a ``basicConfig``-style StreamHandler), after which every
+    ``nab_sentry`` record was printed twice."""
+    root = logging.getLogger()
+    handlers, level = list(root.handlers), root.level
+    try:
+        yield
+    finally:
+        for h in root.handlers[:]:
+            if h not in handlers:
+                root.removeHandler(h)
+        root.setLevel(level)
+
+
 class OpenClipEncoder:
     """OpenCLIP ViT-B/32 (``laion2b_s34b_b79k``) loaded from a local checkpoint only."""
 
@@ -140,11 +157,13 @@ class OpenClipEncoder:
         if threads and threads > 0:
             torch.set_num_threads(int(threads))
         try:
-            model, _, preprocess = open_clip.create_model_and_transforms(
-                MODEL_NAME, pretrained=str(path), device="cpu")
+            with _keep_root_logging():
+                model, _, preprocess = open_clip.create_model_and_transforms(
+                    MODEL_NAME, pretrained=str(path), device="cpu")
         except Exception as exc:  # corrupt / truncated / wrong checkpoint
             raise ModelMissingError(path, f"unreadable ({type(exc).__name__})") from exc
-        tokenizer = open_clip.get_tokenizer(MODEL_NAME)  # bundled BPE, no download
+        with _keep_root_logging():
+            tokenizer = open_clip.get_tokenizer(MODEL_NAME)  # bundled BPE, no download
         model.eval()
         self._setup(model, preprocess, tokenizer, batch_size, torch)
         self.weights_path = path

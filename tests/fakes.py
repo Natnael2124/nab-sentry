@@ -425,3 +425,45 @@ class FailureInjector:
             return
         self.fired += 1
         raise self._make_error()
+
+
+# --------------------------------------------------------------------------------------------
+# Telegram (V2 Notifier)
+# --------------------------------------------------------------------------------------------
+
+
+class FakeTelegramTransport:
+    """Scripted Bot API: records calls, numbers messages, fails on demand.
+
+    ``fail``: callable ``(method, call_index) -> TelegramError | None``; a returned error is
+    raised for that call (so ``retry_after`` and plain failures can be scripted).
+    ``updates``: list of update dicts served by ``getUpdates`` (respecting ``offset``).
+    ``accepted``: (method, chat_id) of every call Telegram "accepted".
+    """
+
+    def __init__(self, fail=None, updates=None) -> None:
+        self.fail = fail
+        self.updates = list(updates or [])
+        self.calls: list[tuple[str, dict, list[str]]] = []
+        self.accepted: list[tuple[str, object, dict]] = []
+        self.next_message_id = 100
+
+    def call(self, method, data, files, timeout):
+        idx = len(self.calls)
+        self.calls.append((method, dict(data), sorted((files or {}).keys())))
+        if self.fail is not None:
+            err = self.fail(method, idx)
+            if err is not None:
+                raise err
+        if method == "getUpdates":
+            off = data.get("offset") or 0
+            return [u for u in self.updates if u["update_id"] >= off]
+        if method in ("sendMessage", "sendPhoto", "sendVideo"):
+            self.next_message_id += 1
+            self.accepted.append((method, data.get("chat_id"), dict(data)))
+            return {"message_id": self.next_message_id}
+        self.accepted.append((method, data.get("chat_id"), dict(data)))
+        return True
+
+    def sent(self, method: str) -> list[tuple[object, dict]]:
+        return [(chat, d) for m, chat, d in self.accepted if m == method]

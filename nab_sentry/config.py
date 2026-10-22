@@ -81,6 +81,15 @@ class Config:
     track_buffer_s: float = 2.0  # 0.2..30, a confirmed track ends after this long unmatched
     scene_cut_frac: float = 0.6  # 0.1..1.0, changed fraction between tracked frames = cut
     segment_gap_reset_s: float = 3.0  # >= 0, tracks continue into a Segment starting this soon
+    # alerts and delivery (V2)
+    alert_clip_pre_s: float = 3.0  # 0..30, clip starts this long before the trigger
+    alert_clip_post_s: float = 5.0  # 0..30, and ends this long after it
+    alert_clip_width: int = 640  # 160..1920
+    alert_max_attempts: int = 8  # 1..100, Telegram delivery attempts before 'failed'
+    camera_offline_factor: float = 3.0  # 1.5..100, x segment_s without a Segment = offline
+    disk_low_gb: float = 10.0  # >= 0, free space on the data volume that raises disk_low
+    retention_days: float = 7.0  # 1..3650, Segments, rows and vectors kept this long
+    alert_retention_days: float = 30.0  # 1..3650, alert media kept this long
     # embedding
     batch_size: int = 8  # 1..64
     num_threads: int = 0  # 0 = physical cores
@@ -248,6 +257,14 @@ _CHECKS: dict[str, _Check] = {
     "track_buffer_s": _num(0.2, 30.0, integer=False),
     "scene_cut_frac": _num(0.1, 1.0, integer=False),
     "segment_gap_reset_s": _num(0.0, None, integer=False),
+    "alert_clip_pre_s": _num(0.0, 30.0, integer=False),
+    "alert_clip_post_s": _num(0.0, 30.0, integer=False),
+    "alert_clip_width": _num(160, 1920, integer=True),
+    "alert_max_attempts": _num(1, 100, integer=True),
+    "camera_offline_factor": _num(1.5, 100.0, integer=False),
+    "disk_low_gb": _num(0.0, None, integer=False),
+    "retention_days": _num(1.0, 3650.0, integer=False),
+    "alert_retention_days": _num(1.0, 3650.0, integer=False),
     "batch_size": _num(1, 64, integer=True),
     "num_threads": _num(0, 256, integer=True),
     "top_k": _num(1, 10000, integer=True),

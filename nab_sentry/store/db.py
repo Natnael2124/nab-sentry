@@ -607,6 +607,102 @@ class MetadataStore:
                     "ON CONFLICT(rule_id) DO UPDATE SET until_epoch_ms = excluded.until_epoch_ms",
                     (rule_id, int(until_epoch_ms)))
 
+    # -- outbox (read and updated by the Notifier) ------------------------------------------------
+
+    ALERT_COLUMNS = ("alert_id", "kind", "rule_id", "rule_name", "severity", "camera_id", "track_id",
+                     "video_id", "trigger_offset_s", "trigger_epoch_ms", "det_class", "n_tracks",
+                     "state", "attempts", "next_attempt_epoch_ms", "snapshot_path", "clip_path",
+                     "note", "feedback", "created_at")
+    _ALERT_UPDATABLE = frozenset({"state", "attempts", "next_attempt_epoch_ms", "clip_path", "note",
+                                  "feedback"})
+
+    def _alert_rows(self, sql: str, params: tuple) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(zip(self.ALERT_COLUMNS, r)) for r in rows]
+
+    def due_alerts(self, now_epoch_ms: int, limit: int = 20) -> list[dict]:
+        """Alerts the Notifier should work on now (pending / photo_sent, retry time reached)."""
+        cols = ", ".join(self.ALERT_COLUMNS)
+        return self._alert_rows(
+            f"SELECT {cols} FROM alerts WHERE state IN ('pending', 'photo_sent') "
+            "AND next_attempt_epoch_ms <= ? ORDER BY alert_id LIMIT ?", (int(now_epoch_ms), int(limit)))
+
+    def get_alert(self, alert_id: int) -> dict | None:
+        cols = ", ".join(self.ALERT_COLUMNS)
+        rows = self._alert_rows(f"SELECT {cols} FROM alerts WHERE alert_id = ?", (int(alert_id),))
+        return rows[0] if rows else None
+
+    def alerts_between(self, from_epoch_ms: int, to_epoch_ms: int) -> list[dict]:
+        cols = ", ".join(self.ALERT_COLUMNS)
+        return self._alert_rows(
+            f"SELECT {cols} FROM alerts WHERE trigger_epoch_ms >= ? AND trigger_epoch_ms < ? "
+            "ORDER BY trigger_epoch_ms", (int(from_epoch_ms), int(to_epoch_ms)))
+
+    def update_alert(self, alert_id: int, **fields: object) -> None:
+        bad = set(fields) - self._ALERT_UPDATABLE
+        if bad:
+            raise ValueError(f"not updatable: {sorted(bad)}")
+        if not fields:
+            return
+        names = sorted(fields)  # column names come from the whitelist above, never from callers
+        sets = ", ".join(f"{n} = ?" for n in names)
+        with self._write():
+            cur = self._conn.execute(f"UPDATE alerts SET {sets} WHERE alert_id = ?",
+                                     (*(fields[n] for n in names), int(alert_id)))
+            if cur.rowcount != 1:
+                raise KeyError(f"no alerts row with alert_id={alert_id}")
+
+    def sent_steps(self, alert_id: int) -> dict[tuple[int, str], int]:
+        """(chat_id, step) -> Telegram message_id already accepted for this alert."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT chat_id, step, message_id FROM alert_messages WHERE alert_id = ?",
+                (int(alert_id),)).fetchall()
+        return {(int(r[0]), r[1]): int(r[2]) for r in rows}
+
+    def record_message(self, alert_id: int, chat_id: int, step: str, message_id: int) -> None:
+        with self._write():
+            self._conn.execute(
+                "INSERT OR REPLACE INTO alert_messages(alert_id, chat_id, step, message_id) "
+                "VALUES (?, ?, ?, ?)", (int(alert_id), int(chat_id), step, int(message_id)))
+
+    def alert_for_message(self, chat_id: int, message_id: int) -> int | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT alert_id FROM alert_messages WHERE chat_id = ? AND message_id = ?",
+                (int(chat_id), int(message_id))).fetchone()
+        return None if row is None else int(row[0])
+
+    def clip_segments(self, camera_id: str, from_epoch_ms: int, to_epoch_ms: int) -> list[tuple[str, int, float]]:
+        """(src_path, start_epoch_ms, duration_s) of complete videos of ``camera_id`` overlapping
+        the window, in time order."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT src_path, start_epoch_ms, duration_s FROM videos WHERE camera_id = ? "
+                "AND status = 'complete' AND start_epoch_ms < ? "
+                "AND start_epoch_ms + CAST(duration_s * 1000 AS INTEGER) > ? ORDER BY start_epoch_ms",
+                (camera_id, int(to_epoch_ms), int(from_epoch_ms))).fetchall()
+        return [(r[0], int(r[1]), float(r[2])) for r in rows]
+
+    def latest_video(self, camera_id: str) -> tuple[str, int, float] | None:
+        """(src_path, start_epoch_ms, duration_s) of the camera's newest complete video."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT src_path, start_epoch_ms, duration_s FROM videos WHERE camera_id = ? "
+                "AND status = 'complete' ORDER BY start_epoch_ms DESC LIMIT 1", (camera_id,)).fetchone()
+        return None if row is None else (row[0], int(row[1]), float(row[2]))
+
+    def kv_get(self, key: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+        return None if row is None else row[0]
+
+    def kv_set(self, key: str, value: str) -> None:
+        with self._write():
+            self._conn.execute("INSERT INTO kv(key, value) VALUES (?, ?) "
+                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+
     def referenced_alert_files(self) -> set[str]:
         with self._lock:
             rows = self._conn.execute(
