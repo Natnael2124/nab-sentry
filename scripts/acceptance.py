@@ -264,9 +264,15 @@ def run_realtime(scene: Path, t_from: float, t_to: float, tol: float) -> dict:
             event_wall = ms / 1000
             sent_wall = call_times[mid - 1]
             latencies.append(sent_wall - event_wall)
-        expected = [a for a in gt["expected_alerts"] if first * seg_s <= a["t"] < last * seg_s]
+        # The replay renames Segments to the wall clock, so rules with a schedule are judged at
+        # the wrong time of day: leave them out of the real-time comparison.
+        scheduled = {r.id for r in rules if r.schedule is not None}
+        expected = [a for a in gt["expected_alerts"]
+                    if first * seg_s <= a["t"] < last * seg_s and a["rule"] not in scheduled]
+        alerts = [a for a in alerts if a["rule"] not in scheduled]
         scores = match_alerts(expected, alerts, tol)
         report = {"window_s": [first * seg_s, last * seg_s], "segments": len(segs),
+                  "rules_left_out": sorted(scheduled),
                   "alerts": scores,
                   "latency_s": {"n": len(latencies),
                                 "median": round(statistics.median(latencies), 1) if latencies else None,
