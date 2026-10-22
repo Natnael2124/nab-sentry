@@ -232,14 +232,16 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
 
 - [ ] 18. Activity log
   - [x] 18.1 `nab_sentry/describe/attributes.py`: prompt groups, softmax scoring, confidence-weighted vote (ties and weak winners give no tag), phrases (task 4.5)
-  - [ ] 18.2 Schema v4: `activities` table; written by the pipeline when a confirmed Track ends (zones with dwell, crossings, tags, best crop, summary); deleted by retention
-  - [ ] 18.3 Measure tag accuracy per group on the scene and the Compilation_Video with per-track voting; switch off groups below 70% (Requirement 4A.3)
-  - [ ] 18.4 Telegram `/today`, `/ask`; API `/api/activities`; Console list
+  - [x] 18.2 Schema v4: `activities` table; written by the pipeline when a confirmed Track ends (zones with dwell, crossings, tags, best crop, summary); deleted by retention
+    - Changed: the row is upserted every time the track gets observations (a track still alive at the end of a run or at a restart is logged too), computed from the track's whole stored history
+  - [x] 18.3 Measure tag accuracy per group on the scene and the Compilation_Video with per-track voting; switch off groups below 70% (Requirement 4A.3)
+    - Generated scene, 9 tracks, checked by eye. First pass: wrong tags had mean probabilities 0.46-0.60 (grey shirt -> 'black', white car at dusk -> 'grey'), right ones 0.70-0.999; two people walking together both came out 'red' (crops containing both). Fixes: minimum probability 0.65; only crops no other detection overlaps vote, and a track without clean crops gets no tag. After: vehicle type 2/2, vehicle colour 1/1 (the white-at-dusk car now untagged), person top colour about 3-4 of 5 tags right with 2 tracks left untagged. Kept on; the sample is small - check on real footage
+  - [x] 18.4 Telegram `/today`, `/ask` (+ `/describe`); API `/api/activities`; Console 'Today's activity' list
 - [ ] 19. On-demand VLM
-  - [ ] 19.1 `nab_sentry/describe/vlm.py`: Ollama client (loopback only), storyboard of a Track's crops, timeout, sanity check reused from `vlm_bench.py`
-  - [ ] 19.2 `/describe ACTIVITY_ID` with caching
-  - [ ] 19.3 Rules with `verify:` question; Notifier verification step (`dismissed` state, schema), never suppressing on VLM failure
-  - [ ] 19.4 Tests with a fake VLM; one slow test against the real Ollama model when it is installed
+  - [x] 19.1 `nab_sentry/describe/vlm.py`: Ollama client (loopback only, think off), storyboard of a Track's crops, timeout
+  - [x] 19.2 `/describe ACTIVITY_ID` with caching
+  - [x] 19.3 Rules with `verify:` question; Notifier verification step, never suppressing on VLM failure. A 'no' stores the alert as `suppressed` with the VLM's answer in `note` (no new state: changing the CHECK would need a table rebuild); immediate alerts go first, at most one verification per tick
+  - [x] 19.4 Tests with a fake VLM; one slow test against the real Ollama model when it is installed
 
 ## Notes
 

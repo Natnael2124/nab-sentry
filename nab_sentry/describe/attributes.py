@@ -20,6 +20,9 @@ from dataclasses import dataclass
 import numpy as np
 
 LOGIT_SCALE = 100.0
+# Measured on the generated scene (task 18.3): the wrong per-track tags had mean probabilities
+# of 0.46-0.60, the right ones 0.70-0.999.
+MIN_PROB = 0.65
 
 
 @dataclass(frozen=True)
@@ -85,7 +88,7 @@ class AttributeTagger:
 
     def __init__(self, encode_text: Callable[[str], np.ndarray],
                  groups: Sequence[Group] = DEFAULT_GROUPS, *, min_share: float = 0.5,
-                 min_prob: float = 0.4) -> None:
+                 min_prob: float = MIN_PROB) -> None:
         self.groups = list(groups)
         self.min_share = min_share
         self.min_prob = min_prob

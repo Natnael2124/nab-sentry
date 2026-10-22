@@ -779,13 +779,19 @@ class MetadataStore:
                 (int(track_id),)).fetchall()
         return [(r[0], float(r[1]), (int(r[2]), int(r[3]), int(r[4]), int(r[5]))) for r in rows]
 
-    def track_crops(self, track_id: int) -> list[tuple[int, float, int]]:
-        """(vector_id, det_conf, box area) of the crop vectors linked to a track."""
+    def track_crops(self, track_id: int) -> list[tuple[int, float, int, bool]]:
+        """(vector_id, det_conf, box area, isolated) of the crop vectors linked to a track;
+        ``isolated`` is False when another crop of the same frame overlaps it (a crop with two
+        people in it gives mixed attributes)."""
         with self._lock:
             rows = self._conn.execute(
-                "SELECT vector_id, det_conf, (x2 - x1) * (y2 - y1) FROM vectors "
-                "WHERE track_id = ? AND kind = 'crop' ORDER BY vector_id", (int(track_id),)).fetchall()
-        return [(int(r[0]), float(r[1]), int(r[2])) for r in rows]
+                "SELECT v.vector_id, v.det_conf, (v.x2 - v.x1) * (v.y2 - v.y1), NOT EXISTS ("
+                "  SELECT 1 FROM vectors o WHERE o.frame_id = v.frame_id AND o.kind = 'crop' "
+                "  AND o.vector_id != v.vector_id AND o.x1 < v.x2 AND v.x1 < o.x2 "
+                "  AND o.y1 < v.y2 AND v.y1 < o.y2) "
+                "FROM vectors v WHERE v.track_id = ? AND v.kind = 'crop' ORDER BY v.vector_id",
+                (int(track_id),)).fetchall()
+        return [(int(r[0]), float(r[1]), int(r[2]), bool(r[3])) for r in rows]
 
     def upsert_activity(self, track_id: int, camera_id: str, det_class: str, first_epoch_ms: int,
                         last_epoch_ms: int, zones: str, crossings: str, tags: str,

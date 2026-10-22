@@ -661,11 +661,14 @@ class IngestPipeline:
         cross = line_crossings(ground, lines)
         crops = self.db.track_crops(track_id)
         tags: dict = {}
-        best = max(crops, key=lambda c: c[2] * c[1])[0] if crops else None
-        if crops and self.encoder is not None and hasattr(self.encoder, "encode_text"):
+        clean = [c for c in crops if c[3]]  # crops no other detection overlaps
+        best = max(clean or crops, key=lambda c: c[2] * c[1])[0] if crops else None
+        if clean and self.encoder is not None and hasattr(self.encoder, "encode_text"):
+            # Only clean crops vote: a crop with two people in it gives mixed colours, and a
+            # crowded track gets no tag rather than a wrong one.
             if self._tagger is None:
                 self._tagger = AttributeTagger(self.encoder.encode_text)
-            vecs = [v for v in (self._vector(vid, st) for vid, _c, _a in crops) if v is not None]
+            vecs = [v for v in (self._vector(c[0], st) for c in clean) if v is not None]
             tags = self._tagger.tag(det_class, vecs)
         label = (spec.label if spec else None) or self.db.camera_label(camera_id) or camera_id
         text = summary(ground[0][0], ground[-1][0], label, phrase(det_class, tags), zsec, cross)
