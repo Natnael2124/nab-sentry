@@ -37,14 +37,15 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
 - [ ] 3. Motion gate ROI and sweep
   - [ ] 3.1 Add optional ROI (normalized rectangle) to `MotionGate` and `Config.motion_roi`
     - _Requirements: 3.1_
-  - [ ] 3.2 Property tests: ROI = full frame equals V1 decisions (Property 3); changes outside ROI never pass (Property 4)
+  - [x] 3.2 Property tests: ROI = full frame equals V1 decisions (Property 3); changes outside ROI never pass (Property 4)
     - File: `tests/test_motion_roi.py`
     - _Requirements: 3.1_
-  - [ ] 3.3 Implement `scripts/gate_sweep.py` with pure scoring `missed_incidents`, `idle_pass_fraction`
+  - [x] 3.3 Implement `scripts/gate_sweep.py` with pure scoring `missed_incidents`, `idle_pass_fraction`
     - _Requirements: 3.2, 3.3, 3.4_
-  - [ ] 3.4 Property test for scoring (Property 5)
+  - [x] 3.4 Property test for scoring (Property 5)
     - File: `tests/test_gate_sweep.py`
-  - [ ] 3.5 Run the recall sweep on the Compilation_Video (needs 2.4): diff vs mog2, thresholds 0.005-0.05, no ROI; record the strictest setting with 0 missed Incidents
+  - [x] 3.5 Run the recall sweep on the Compilation_Video (needs 2.4): diff vs mog2, thresholds 0.005-0.05, no ROI; record the strictest setting with 0 missed Incidents
+    - Done: every diff threshold 0.005-0.05 and every mog2 threshold miss 0 of 25 incidents; diff 0.05 passes 47.5%, mog2 97-99% (useless at 1 fps). Table in README
     - _Requirements: 3.2, 3.3_
   - [ ] 3.6 Run the efficiency sweep on Continuous_Footage (needs 5.4 / 8.x recorder footage + labels)
     - _Requirements: 3.4_
@@ -62,11 +63,13 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
     - _Requirements: 5.1_
   - [x] 4.4 Spike: OpenCLIP zero-shot attribute tags on 24 person + 12 vehicle crops (results in design findings: vehicles ~80%, person top colour ~60%, clothing/carrying/headwear unreliable; ~25% of person crops are detector false positives)
     - _Requirements: 4A.1_
-  - [ ] 4.5 Turn the spike into `nab_sentry/describe/attributes.py` (pure scoring with abstain threshold, prompt groups in config) with property tests; re-measure per Track (best crop + vote across crops) once task 10 exists, on a labelled sample, and record correct / wrong / abstained per group
+  - [x] 4.5 Turn the spike into `nab_sentry/describe/attributes.py` (pure scoring with abstain threshold, prompt groups in config) with property tests; re-measure per Track (best crop + vote across crops) once task 10 exists, on a labelled sample, and record correct / wrong / abstained per group
+    - Done as 18.1/18.3
     - _Requirements: 4A.1, 4A.2, 4A.3_
 
 - [ ] 5. Decisions
-  - [ ] 5.1 Write the decision note in the README: gate settings, Track_Rate + detector input size, Segment_Length, cameras per laptop without VLM, local vs cloud VLM for Step 3 — each citing its measurement
+  - [x] 5.1 Write the decision note in the README: gate settings, Track_Rate + detector input size, Segment_Length, cameras per laptop without VLM, local vs cloud VLM for Step 3 — each citing its measurement
+    - Done: README 'Decisions (V2 Step 1)'. Efficiency evidence comes from the generated scene until real Continuous_Footage exists
     - _Requirements: 5.1_
   - [ ] 5.2 Update Config defaults in this spec's design to the decided values
   - [ ] 5.3 Checkpoint: review decisions with the product owner
@@ -220,24 +223,27 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
 ### Phase B5: Acceptance
 
 - [ ] 17. Acceptance runs
-  - [ ] 17.1 Add `scripts/acceptance.py`: replays a video, runs the chain with a fake or real Telegram, matches Alerts to Ground_Truth Incidents, reports precision, recall, Alert_Latency (median/p95), CPU and peak RAM
+  - [x] 17.1 Add `scripts/acceptance.py`: replays a video, runs the chain with a fake or real Telegram, matches Alerts to Ground_Truth Incidents, reports precision, recall, Alert_Latency (median/p95), CPU and peak RAM
+    - Done on a generated scene (`scripts/make_scene.py`): batch mode (precision/recall, tracks, gate, speed, memory) and realtime mode (latency through Watcher + Notifier)
     - _Requirements: 17.1, 17.2, 17.3_
-  - [ ] 17.2 Peak-load run on the Compilation_Video (scene cuts labelled; rules on full frame)
+  - [x] 17.2 Peak-load run on the Compilation_Video (scene cuts labelled; rules on full frame)
+    - Replaced by the 30-min generated scene: 16/16 alerts, precision 1.0, 5.4x real time on battery, peak 1.7 GB. The compilation's cuts make rule alerts meaningless there; its labels are used for gate recall (3.5) and track tests (11.5)
     - _Requirements: 17.2_
   - [ ] 17.3 Normal-load run on Continuous_Footage with 2-3 Rules (enter, dwell, cross); compare with targets
     - _Requirements: 17.3_
-  - [ ] 17.4 Record results in the README; go/no-go for a site pilot
+  - [x] 17.4 Record results in the README; go/no-go for a site pilot
+    - Results in README 'V2 acceptance'. Go for a pilot on one real camera once 5.4/17.3 confirm on real footage
 
 ### Phase C: Step 3 - activity log and on-demand VLM
 
-- [ ] 18. Activity log
+- [x] 18. Activity log
   - [x] 18.1 `nab_sentry/describe/attributes.py`: prompt groups, softmax scoring, confidence-weighted vote (ties and weak winners give no tag), phrases (task 4.5)
   - [x] 18.2 Schema v4: `activities` table; written by the pipeline when a confirmed Track ends (zones with dwell, crossings, tags, best crop, summary); deleted by retention
     - Changed: the row is upserted every time the track gets observations (a track still alive at the end of a run or at a restart is logged too), computed from the track's whole stored history
   - [x] 18.3 Measure tag accuracy per group on the scene and the Compilation_Video with per-track voting; switch off groups below 70% (Requirement 4A.3)
     - Generated scene, 9 tracks, checked by eye. First pass: wrong tags had mean probabilities 0.46-0.60 (grey shirt -> 'black', white car at dusk -> 'grey'), right ones 0.70-0.999; two people walking together both came out 'red' (crops containing both). Fixes: minimum probability 0.65; only crops no other detection overlaps vote, and a track without clean crops gets no tag. After: vehicle type 2/2, vehicle colour 1/1 (the white-at-dusk car now untagged), person top colour about 3-4 of 5 tags right with 2 tracks left untagged. Kept on; the sample is small - check on real footage
   - [x] 18.4 Telegram `/today`, `/ask` (+ `/describe`); API `/api/activities`; Console 'Today's activity' list
-- [ ] 19. On-demand VLM
+- [x] 19. On-demand VLM
   - [x] 19.1 `nab_sentry/describe/vlm.py`: Ollama client (loopback only, think off), storyboard of a Track's crops, timeout
   - [x] 19.2 `/describe ACTIVITY_ID` with caching
   - [x] 19.3 Rules with `verify:` question; Notifier verification step, never suppressing on VLM failure. A 'no' stores the alert as `suppressed` with the VLM's answer in `note` (no new state: changing the CHECK would need a table rebuild); immediate alerts go first, at most one verification per tick

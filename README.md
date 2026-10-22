@@ -191,6 +191,55 @@ Qwen3-VL 2B describes scenes correctly ("man in a red striped shirt and black sh
 
 `scripts/attr_spike.py` tags crops from their existing OpenCLIP embeddings (about 2 ms per crop). On 24 person and 12 vehicle crops of the compilation video, checked by eye: vehicle colour and type about 80% correct, person top colour about 60% (right on clean single-person crops), clothing type / carried objects / headwear unreliable. About a quarter of the sampled person crops were detector false positives (title-card text, a cat, a fence).
 
+### Motion gate recall (Compilation_Video)
+
+`scripts/gate_sweep.py VIDEO_DIR` replays the gate at 1 fps and checks every labelled incident has at least one passed frame. On the compilation (387 sampled seconds, 25 incidents, no ROI):
+
+| Method | Threshold | Pass fraction | Missed incidents |
+|---|---|---|---|
+| diff | 0.005 | 0.873 | 0 |
+| diff | 0.01 | 0.801 | 0 |
+| diff | 0.02 (default) | 0.695 | 0 |
+| diff | 0.05 | 0.475 | 0 |
+| mog2 | 0.005-0.05 | 0.966-0.992 | 0 |
+
+Every setting catches every incident, so the compilation cannot tell thresholds apart on recall. MOG2 passes almost everything at 1 fps (its background model cannot settle at that rate) and is not useful here.
+
+## V2 acceptance (generated scene)
+
+No continuous footage of a real camera exists yet, so `scripts/make_scene.py` generates 30 minutes of one fixed backyard view: a frame of the compilation as background, person and car cut-outs (GrabCut) from the same video moving along scripted paths, and in between an idle scene that is not static (sensor noise, slow brightness drift, a swaying tree outside the ROI, one sudden "lights on" step). Ground truth comes from the script, and the expected alerts come from running the real RuleEngine on the exact scripted positions. Six rules: enter, cross in, cross out, dwell 25 s, count >= 2 and a scheduled enter. `scripts/acceptance.py` then runs the real detector, embedder, tracker, rules and Notifier (with a recording Telegram transport).
+
+Batch run, 180 Segments of 10 s, **on battery** (CPU at about 1.2-1.5 GHz):
+
+| Measure | Result |
+|---|---|
+| Alerts | 16 expected, 16 raised, 0 extra: **precision 1.0, recall 1.0** |
+| Alert time error vs the scripted event | 0-1.4 s |
+| Tracks | 9 confirmed, 0 unmatched: each of the 6 single objects inside the ROI got exactly one track |
+| Two people walking together | 3 tracks for the pair (one identity switch while they overlap) |
+| Person walking outside the ROI | never tracked (by design: the ROI excludes it) |
+| Gate while idle | 160 of 1,614 idle seconds passed (0.099), all of them Segment keyframes; **0 motion passes** from noise, drift, the tree or the lights step |
+| Speed | 1,800 s of footage in 331 s: 5.4x real time (872 CPU s) |
+| Peak memory | 1.7 GB |
+
+Real-time run (Segments released at the 10 s pace a Recorder would write them, Watcher and Notifier running, 110-330 s of the scene): all 4 unscheduled alerts in the window were delivered, **alert latency median 17.4 s, max 29.5 s** from the event to the photo. Most of it is waiting for the 10 s Segment to close, plus ingest and the Notifier poll. The scheduled rule is left out of this run, because the replay renames files to the wall clock and so moves them out of the rule's 20:00-20:10 window.
+
+Activity log tags on the scene's 9 tracks, after the fixes in task 18.3: vehicle type 2/2 right, vehicle colour 1/1 right (the white car at dusk is left untagged), person top colour about 3-4 of 5 right with 2 tracks untagged. Tags for people who overlap are still unreliable.
+
+## Decisions (V2 Step 1)
+
+| Decision | Choice | Evidence |
+|---|---|---|
+| Motion gate | `diff`, threshold 0.02 (default), ROI per camera over the watched area | 0 missed incidents at every diff threshold; 0 idle motion passes on the scene; mog2 passes 97-99% at 1 fps |
+| Track_Rate | 3 fps while the gate is open | dwell, count and cross alerts within 1.4 s of the scripted event; the detector is 11% busy at 3 fps |
+| Detector input | 384x640, 2 threads | recall 0.98 vs 640 square at 60% of the cost (table above) |
+| Segment_Length | 10 s | real-time alert latency median 17 s / max 30 s. Shorter Segments would cut latency but multiply files and ffmpeg overhead; revisit only if 30 s is too slow in use |
+| Cameras per laptop (no VLM) | about 1.5 cameras busy every second, many more mostly idle | compilation: 247 s to ingest 387 busy seconds on AC; the generated scene (mostly idle) runs 5.4x real time on battery |
+| VLM | local `qwen3-vl:2b-instruct`, on demand only (`/describe`, rules with a `verify` question) | about 40 s per image; never per event. No cloud VLM, so footage never leaves the machine |
+| Attribute tags | OpenCLIP zero-shot, per-track vote, only crops no other detection overlaps, minimum probability 0.65 | wrong tags had probabilities 0.46-0.60, right ones 0.70+ (task 18.3) |
+
+Still open: the same runs on real continuous footage from the user's camera (the scene is generated, so lighting, compression and real people's movement are only approximated), and a real Telegram chat.
+
 ## Security limitations
 
 The MVP has no authentication or access control and is meant for single-user demos on one trusted machine.
