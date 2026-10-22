@@ -47,7 +47,8 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
   - [x] 3.5 Run the recall sweep on the Compilation_Video (needs 2.4): diff vs mog2, thresholds 0.005-0.05, no ROI; record the strictest setting with 0 missed Incidents
     - Done: every diff threshold 0.005-0.05 and every mog2 threshold miss 0 of 25 incidents; diff 0.05 passes 47.5%, mog2 97-99% (useless at 1 fps). Table in README
     - _Requirements: 3.2, 3.3_
-  - [ ] 3.6 Run the efficiency sweep on Continuous_Footage (needs 5.4 / 8.x recorder footage + labels)
+  - [x] 3.6 Run the efficiency sweep on Continuous_Footage (needs 5.4 / 8.x recorder footage + labels)
+    - Done on the 30-min generated scene: every diff threshold 0.01-0.05 misses 0 objects and idles at the keyframe floor 0.098; mog2 0.01 without ROI 0.128. Repeat on real Continuous_Footage when 5.4 exists
     - _Requirements: 3.4_
 
 - [ ] 4. VLM latency

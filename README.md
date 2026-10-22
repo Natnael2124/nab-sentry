@@ -205,6 +205,18 @@ Qwen3-VL 2B describes scenes correctly ("man in a red striped shirt and black sh
 
 Every setting catches every incident, so the compilation cannot tell thresholds apart on recall. MOG2 passes almost everything at 1 fps (its background model cannot settle at that rate) and is not useful here.
 
+Efficiency, on the 30-minute generated scene (9 objects, mostly idle; ROI `0,0.35,1,1` = the lower 65% of the frame):
+
+| Method | Threshold | ROI | Pass fraction | Missed objects | Idle pass fraction |
+|---|---|---|---|---|---|
+| diff | 0.01 | none / ROI | 0.149 / 0.148 | 0 | 0.098 |
+| diff | 0.02 | none / ROI | 0.139 / 0.142 | 0 | 0.098 |
+| diff | 0.05 | none / ROI | 0.106 / 0.110 | 0 | 0.098 |
+| mog2 | 0.01 | none / ROI | 0.172 / 0.145 | 0 | 0.128 / 0.098 |
+| mog2 | 0.02-0.05 | none / ROI | 0.106-0.128 | 0 | 0.098 |
+
+0.098 is the floor: a Segment keyframe every 10 s always passes. Every diff setting reaches it, so idle cost comes from keyframes, not from noise, drift or the "lights on" step. Higher thresholds only shorten how long a busy object keeps the gate open. diff 0.02 stays the default, and diff 0.05 is a safe saving on a quiet site. The generated noise is milder than a real night-time sensor, so check this again on real footage.
+
 ## V2 acceptance (generated scene)
 
 No continuous footage of a real camera exists yet, so `scripts/make_scene.py` generates 30 minutes of one fixed backyard view: a frame of the compilation as background, person and car cut-outs (GrabCut) from the same video moving along scripted paths, and in between an idle scene that is not static (sensor noise, slow brightness drift, a swaying tree outside the ROI, one sudden "lights on" step). Ground truth comes from the script, and the expected alerts come from running the real RuleEngine on the exact scripted positions. Six rules: enter, cross in, cross out, dwell 25 s, count >= 2 and a scheduled enter. `scripts/acceptance.py` then runs the real detector, embedder, tracker, rules and Notifier (with a recording Telegram transport).
