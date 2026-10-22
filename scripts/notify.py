@@ -53,13 +53,11 @@ def parse_chats(raw: str | None) -> list[int]:
     return chats
 
 
-def vlm_describer(cfg):
-    """The on-demand VLM's describe function, or None until Step 3's VLM module exists."""
-    try:
-        from nab_sentry.describe.vlm import describer_from_config
-    except ImportError:
-        return None
-    return describer_from_config(cfg)
+def vlm_describer(cfg, db):
+    """The on-demand VLM's ``/describe`` function (local Ollama)."""
+    from nab_sentry.describe.vlm import describer_from_config
+
+    return describer_from_config(cfg, db)
 
 
 def main(argv: Sequence[str] | None = None, *, transport=None, stop: threading.Event | None = None) -> int:
@@ -99,8 +97,14 @@ def main(argv: Sequence[str] | None = None, *, transport=None, stop: threading.E
         labels = {cam: label for cam, label in db.cameras()} | {k: v[0] for k, v in cam_info.items()}
         health = HealthMonitor(cfg, db, cam_info, started_s=time.time())
         client = TelegramClient(transport or HttpxTransport(token))
+        verifier = None
+        if args.vlm:
+            from nab_sentry.describe.vlm import verifier_from_config
+
+            verifier = verifier_from_config(cfg)
         outbox = Outbox(cfg, db, client, chats, camera_labels=labels,
-                        segment_s=lambda cam: cam_info.get(cam, ("", 10.0))[1])
+                        segment_s=lambda cam: cam_info.get(cam, ("", 10.0))[1],
+                        questions={r.id: r.verify for r in rules if r.verify}, verifier=verifier)
         from nab_sentry.notify.search import TodaySearch
 
         def load_encoder():
@@ -114,7 +118,7 @@ def main(argv: Sequence[str] | None = None, *, transport=None, stop: threading.E
 
         commands = Commands(db, labels, rules, live_dir=cfg.live_dir, offline_after_s=health.offline_after_s,
                             thumbs_dir=cfg.thumbs_dir, searcher=TodaySearch(cfg, db, load_encoder),
-                            describer=vlm_describer(cfg) if args.vlm else None)
+                            describer=vlm_describer(cfg, db) if args.vlm else None)
         notifier = Notifier(db, client, chats, commands, outbox, camera_labels=labels,
                             health=health.check)
         log.info("notifier started for %d chat(s), %d camera(s), %d rule(s)", len(chats), len(cam_info), len(rules))

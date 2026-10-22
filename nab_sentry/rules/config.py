@@ -12,7 +12,7 @@
         trigger: {type: enter}             # or {type: dwell, seconds: 20} / {type: count, min: 3}
         debounce: 2                        # consecutive qualifying observations (default 2)
         cooldown_s: 300                    # min seconds between alerts of this rule (default 300)
-        severity: immediate                # immediate | verify (verify == immediate until Step 3)
+        severity: immediate                # immediate | verify (ask the VLM first, see verify)
       - id: gate-in
         name: Someone came in through the gate
         camera: CAM01
@@ -20,6 +20,10 @@
         direction: in                      # in | out | any
         classes: [person, car]
         trigger: {type: cross}
+
+``verify`` (with ``severity: verify``) is a yes/no question the on-demand VLM answers about the
+alert snapshot before the alert is sent, e.g. ``"Is a person climbing over the fence?"``; a "no"
+keeps the alert from being sent, a VLM failure sends it marked "not verified".
 
 ``schedule`` is optional (always active). A window whose ``end`` is not after its ``start``
 wraps past midnight and belongs to the day it starts on: Monday 22:00-06:00 runs from Monday
@@ -95,6 +99,7 @@ class Rule:
     debounce: int = DEFAULT_DEBOUNCE
     cooldown_s: float = DEFAULT_COOLDOWN_S
     severity: str = "immediate"
+    verify: str | None = None  # yes/no question for the on-demand VLM (severity: verify)
 
     def in_schedule(self, local: datetime) -> bool:
         return self.schedule is None or self.schedule.active(local)
@@ -199,12 +204,18 @@ def _parse_rule(i: int, raw: Any, cams: dict[str, CameraSpec], issues: list[str]
     sev = raw.get("severity", "immediate")
     if sev not in SEVERITIES:
         issues.append(f"{name}.severity: must be immediate or verify, got {sev!r}")
+    question = raw.get("verify")
+    if question is not None and (not isinstance(question, str) or not question.strip() or len(question) > 300):
+        issues.append(f"{name}.verify: must be a question of 1-300 characters")
+    elif question is not None and sev != "verify":
+        issues.append(f"{name}.verify: needs severity: verify")
 
     if len(issues) != before:
         return None
     return Rule(rid, title.strip(), cam, frozenset(classes), ttype, zone if ttype != "cross" else None,
                 zone_poly, line if ttype == "cross" else None, line_pts, direction, float(seconds),
-                min_count, schedule, deb, float(cool), sev)
+                min_count, schedule, deb, float(cool), sev,
+                question.strip() if isinstance(question, str) else None)
 
 
 def parse_rules(data: Any, cameras: list[CameraSpec], path: Path | str = "<data>") -> list[Rule]:

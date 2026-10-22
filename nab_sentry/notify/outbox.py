@@ -73,7 +73,11 @@ class Outbox:
     def __init__(self, cfg: Config, db: MetadataStore, client: TelegramClient, chats: Sequence[int], *,
                  camera_labels: dict[str, str] | None = None,
                  segment_s: Callable[[str], float] = lambda cam: 10.0,
-                 clip_maker: Callable[..., Path] = make_clip) -> None:
+                 clip_maker: Callable[..., Path] = make_clip,
+                 questions: dict[str, str] | None = None,
+                 verifier: Callable[[Path, str], tuple[bool | None, str]] | None = None) -> None:
+        """``questions``: rule_id -> yes/no question of rules with ``severity: verify``;
+        ``verifier(snapshot, question)`` -> (yes / no / None, the VLM's words) (Requirement 21)."""
         self.cfg = cfg
         self.db = db
         self.client = client
@@ -81,10 +85,16 @@ class Outbox:
         self.labels = camera_labels or {}
         self.segment_s = segment_s
         self.clip_maker = clip_maker
+        self.questions = dict(questions or {})
+        self.verifier = verifier
 
     def tick(self, now_s: float, limit: int = 20) -> int:
         """Advance every due alert by one step; returns how many were worked on."""
         due = self.db.due_alerts(round(now_s * 1000), limit)
+        # Alerts that need the slow VLM go last and at most one per tick, so an immediate alert
+        # never waits behind a verification.
+        slow = [a for a in due if self._needs_verification(a)]
+        due = [a for a in due if not self._needs_verification(a)] + slow[:1]
         for alert in due:
             try:
                 self._advance(alert, now_s)
@@ -106,6 +116,10 @@ class Outbox:
                     self._record(aid, chat, "text", self.client.send_message(chat, caption(alert, label)))
             self.db.update_alert(aid, state="sent", attempts=0)
             return
+        if self._needs_verification(alert):
+            if not self._verify(alert):
+                return
+            alert = self.db.get_alert(aid)  # type: ignore[assignment]
         if alert["state"] == "pending":
             snap = self.cfg.alerts_dir / alert["snapshot_path"] if alert.get("snapshot_path") else None
             for chat in self.chats:
@@ -119,8 +133,9 @@ class Outbox:
             self.db.update_alert(aid, state="photo_sent", attempts=0, next_attempt_epoch_ms=round(now_s * 1000))
             alert = self.db.get_alert(aid)  # type: ignore[assignment]
             sent = self.db.sent_steps(aid)
-        # photo_sent: the clip
-        if not alert.get("clip_path") and not alert.get("note"):
+        # photo_sent: the clip (a verification note is not a clip note)
+        clip_noted = (alert.get("note") or "").startswith("(no video clip")
+        if not alert.get("clip_path") and not clip_noted:
             if not self._prepare_clip(alert, now_s):
                 return  # waiting for the next Segment
             alert = self.db.get_alert(aid)  # type: ignore[assignment]
@@ -132,6 +147,33 @@ class Outbox:
                                                  reply_to=sent.get((chat, "photo")))
                     self._record(aid, chat, "clip", mid)
         self.db.update_alert(aid, state="sent", attempts=0)
+
+    def _needs_verification(self, alert: dict) -> bool:
+        return (alert["kind"] == "rule" and alert.get("severity") == "verify" and alert["state"] == "pending"
+                and alert.get("rule_id") in self.questions and not (alert.get("note") or "").startswith("("))
+
+    def _verify(self, alert: dict) -> bool:
+        """Ask the VLM; False when the answer is no (the alert is kept from being sent). A VLM
+        that is off, fails or answers neither yes nor no never stops the alert."""
+        question = self.questions[alert["rule_id"]]
+        snap = self.cfg.alerts_dir / alert["snapshot_path"] if alert.get("snapshot_path") else None
+        if self.verifier is None or snap is None or not snap.is_file():
+            why = "VLM off" if self.verifier is None else "no snapshot"
+            self.db.update_alert(alert["alert_id"], note=f"(not verified: {why})")
+            return True
+        try:
+            answer, words = self.verifier(snap, question)
+        except Exception as exc:  # noqa: BLE001 - a broken VLM must never swallow an alert
+            log.warning("alert %s: verification failed: %s", alert["alert_id"], exc)
+            self.db.update_alert(alert["alert_id"], note=f"(not verified: {str(exc)[:120]})")
+            return True
+        if answer is False:
+            self.db.update_alert(alert["alert_id"], state="suppressed", note=f"dismissed by the VLM: {words[:200]}")
+            log.info("alert %s dismissed by the VLM: %s", alert["alert_id"], words)
+            return False
+        note = f"(verified: {words[:150]})" if answer else f"(not verified: unclear answer \"{words[:80]}\")"
+        self.db.update_alert(alert["alert_id"], note=note)
+        return True
 
     def _prepare_clip(self, alert: dict, now_s: float) -> bool:
         """Cut the clip if its footage is ready; False while waiting for the next Segment. A clip

@@ -770,6 +770,15 @@ class MetadataStore:
                 (int(track_id),)).fetchall()
         return [tuple(int(x) for x in r) for r in rows]  # type: ignore[misc]
 
+    def track_frames(self, track_id: int) -> list[tuple[str, float, tuple[int, int, int, int]]]:
+        """(source video path, offset_s, box) of every observation of a track, in time order."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT v.src_path, o.offset_s, o.x1, o.y1, o.x2, o.y2 FROM track_obs o "
+                "JOIN videos v USING (video_id) WHERE o.track_id = ? ORDER BY o.abs_epoch_ms",
+                (int(track_id),)).fetchall()
+        return [(r[0], float(r[1]), (int(r[2]), int(r[3]), int(r[4]), int(r[5]))) for r in rows]
+
     def track_crops(self, track_id: int) -> list[tuple[int, float, int]]:
         """(vector_id, det_conf, box area) of the crop vectors linked to a track."""
         with self._lock:

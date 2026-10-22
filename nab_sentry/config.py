@@ -90,6 +90,10 @@ class Config:
     disk_low_gb: float = 10.0  # >= 0, free space on the data volume that raises disk_low
     retention_days: float = 7.0  # 1..3650, Segments, rows and vectors kept this long
     alert_retention_days: float = 30.0  # 1..3650, alert media kept this long
+    # on-demand VLM (Step 3): local Ollama only
+    vlm_host: str = "http://127.0.0.1:11434"
+    vlm_model: str = "qwen3-vl:2b-instruct"
+    vlm_timeout_s: float = 180.0  # 10..900
     # embedding
     batch_size: int = 8  # 1..64
     num_threads: int = 0  # 0 = physical cores
@@ -265,6 +269,9 @@ _CHECKS: dict[str, _Check] = {
     "disk_low_gb": _num(0.0, None, integer=False),
     "retention_days": _num(1.0, 3650.0, integer=False),
     "alert_retention_days": _num(1.0, 3650.0, integer=False),
+    "vlm_host": _nonempty_str,
+    "vlm_model": _nonempty_str,
+    "vlm_timeout_s": _num(10.0, 900.0, integer=False),
     "batch_size": _num(1, 64, integer=True),
     "num_threads": _num(0, 256, integer=True),
     "top_k": _num(1, 10000, integer=True),
