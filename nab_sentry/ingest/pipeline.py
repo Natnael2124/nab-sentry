@@ -262,6 +262,7 @@ class IngestPipeline:
         checkpoint: Checkpoint | None = None,
         tracker: TrackSink | None = None,
         rules: Sequence[Rule] = (),
+        rois: dict[str, tuple[float, float, float, float]] | None = None,
     ) -> None:
         self.cfg = cfg
         self.db = db
@@ -274,6 +275,8 @@ class IngestPipeline:
         self._track_ids: dict[str, dict[int, int]] = {}
         # Watch rules need tracks: without a tracker they are ignored (logged once per camera).
         self.rules = list(rules)
+        # camera_id -> motion ROI from the Camera_Config (V2 Requirement 3.1); none = whole frame
+        self.rois = dict(rois or {})
         self._engines: dict[str, RuleEngine] = {}
         self.open_source = open_source
         self.start_playback = start_playback or (
@@ -426,6 +429,7 @@ class IngestPipeline:
         gate = MotionGate(
             cfg.motion_threshold, cfg.keyframe_interval_s, cfg.gate_width,
             cfg.motion_pixel_delta, cfg.motion_method,  # type: ignore[arg-type]
+            roi=self.rois.get(meta.camera_id),
         )
         gate.reset()
         if tracker is not None:

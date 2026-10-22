@@ -278,6 +278,9 @@ def _run(
                 log.info("watch rules: %s", ", ".join(f"{r.id} ({r.camera})" for r in rules))
         elif rules:
             log.warning("%d watch rule(s) ignored: rules need the detector and tracking", len(rules))
+        rois = camera_rois(args.cameras)
+        if rois:
+            kw["rois"] = rois
         pipeline = IngestPipeline(cfg, db, index, encoder, detector, **kw)
         pipeline.reconcile()
         if args.watch:
@@ -294,6 +297,18 @@ def _run(
         return EXIT_OK
     finally:
         db.close()
+
+
+def camera_rois(path: Path) -> dict[str, tuple[float, float, float, float]]:
+    """camera_id -> motion ROI from the Camera_Config (cameras without one use the whole frame)."""
+    from nab_sentry.live.camera_config import CameraConfigError, load_cameras
+
+    if not path.is_file():
+        return {}
+    try:
+        return {c.camera_id: c.roi for c in load_cameras(path) if c.roi is not None}
+    except CameraConfigError:
+        return {}
 
 
 def live_camera_ids(path: Path) -> list[str]:
