@@ -27,6 +27,10 @@
 .PARAMETER NoServer
     Do not start the API_Server.
 
+.PARAMETER Vlm
+    Start the notifier with --vlm: /describe and rules with a verify question use the local
+    Ollama VLM (qwen3-vl:2b-instruct; Ollama must be running).
+
 .PARAMETER DryRun
     Print what would be started and exit 0.
 
@@ -41,6 +45,7 @@ param(
     [switch]$NoRecorder,
     [switch]$NoNotifier,
     [switch]$NoServer,
+    [switch]$Vlm,
     [switch]$DryRun
 )
 
@@ -80,7 +85,9 @@ if ($NoNotifier) {
 } elseif (-not $env:NAB_TELEGRAM_TOKEN -or -not $env:NAB_TELEGRAM_CHATS) {
     Write-Log 'notifier: skipped (set NAB_TELEGRAM_TOKEN and NAB_TELEGRAM_CHATS to send alerts to Telegram)'
 } else {
-    [void]$services.Add(@{ Name = 'notifier'; Args = @('scripts\notify.py') })
+    $notifyArgs = @('scripts\notify.py')
+    if ($Vlm) { $notifyArgs += '--vlm' }
+    [void]$services.Add(@{ Name = 'notifier'; Args = $notifyArgs })
 }
 if ($NoServer) {
     Write-Log 'api: skipped (-NoServer)'

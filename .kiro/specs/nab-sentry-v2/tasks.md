@@ -75,6 +75,7 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
   - [ ] 5.2 Update Config defaults in this spec's design to the decided values
   - [ ] 5.3 Checkpoint: review decisions with the product owner
   - [ ] 5.4 **(Integrator)** Record ≥ 1 h of Continuous_Footage of one fixed view (phone or IP camera, mostly idle, ideally including a lighting change) and label it; this unblocks 3.6, 17.3
+    - Tooling ready: `scripts/prepare_footage.py` (segments + contact sheets with clock times + ground_truth.yaml template), `nab_sentry/scene_truth.py` (clock-time labels), acceptance.py / gate_sweep.py take real segment times from file names; steps in docs/REAL_FOOTAGE_AND_TELEGRAM.md
 
 ### Phase B1: Live input
 

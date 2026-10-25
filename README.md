@@ -250,6 +250,8 @@ Activity log tags on the scene's 9 tracks, after the fixes in task 18.3: vehicle
 | VLM | local `qwen3-vl:2b-instruct`, on demand only (`/describe`, rules with a `verify` question) | about 40 s per image; never per event. No cloud VLM, so footage never leaves the machine |
 | Attribute tags | OpenCLIP zero-shot, per-track vote, only crops no other detection overlaps, minimum probability 0.65 | wrong tags had probabilities 0.46-0.60, right ones 0.70+ (task 18.3) |
 
+Step-by-step commands for recording, labelling and measuring real footage and for the live Telegram test: [docs/REAL_FOOTAGE_AND_TELEGRAM.md](docs/REAL_FOOTAGE_AND_TELEGRAM.md).
+
 Still open: the same runs on real continuous footage from the user's camera (the scene is generated, so lighting, compression and real people's movement are only approximated), and a real Telegram chat.
 
 ## Security limitations

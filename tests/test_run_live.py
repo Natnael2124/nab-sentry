@@ -95,3 +95,11 @@ def test_restarts_a_service_that_exits(tmp_path: Path) -> None:
         subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
     log = (ws / "data" / "logs" / "run_live.log").read_text(encoding="utf-8-sig")
     assert "watcher: exited with code 3" in log and "restarting in 2 s" in log
+
+
+def test_vlm_switch_passes_vlm_to_the_notifier(tmp_path: Path) -> None:
+    env = {"NAB_TELEGRAM_TOKEN": "1:x", "NAB_TELEGRAM_CHATS": "5"}
+    ws = _workspace(tmp_path, cameras=False)
+    with_vlm = [l for l in _run(ws, "-DryRun", "-Vlm", env=env).stdout.splitlines() if "notifier" in l]
+    without = [l for l in _run(ws, "-DryRun", env=env).stdout.splitlines() if "notifier" in l]
+    assert with_vlm[0].endswith("notify.py --vlm") and without[0].endswith("notify.py")

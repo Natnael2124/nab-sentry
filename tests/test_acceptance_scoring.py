@@ -86,3 +86,10 @@ def test_more_passes_never_miss_more(passed, raw):
     inc = [(a, a + d) for a, d in raw]
     fewer = gs.missed_incidents(passed[: len(passed) // 2], inc)
     assert len(gs.missed_incidents(passed, inc)) <= len(fewer)
+
+
+def test_replay_plan_uses_file_times_and_gaps():
+    offs = [(Path("a"), 0.0), (Path("b"), 12.0), (Path("c"), 22.0), (Path("d"), 100.0)]
+    plan = acc.replay_plan(offs, 10, 0.0, 1e9)
+    assert [(o, d) for _, o, d in plan] == [(0.0, 12.0), (12.0, 10.0), (22.0, 10.0), (100.0, 10.0)]
+    assert [p.name for p, _, _ in acc.replay_plan(offs, 10, 10.0, 100.0)] == ["b", "c"]

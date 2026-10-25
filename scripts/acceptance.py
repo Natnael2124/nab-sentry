@@ -1,12 +1,13 @@
-"""Acceptance runs on a generated scene (V2 Requirement 17, task 17.1).
+"""Acceptance runs on a generated scene or real labelled footage (V2 Requirement 17, tasks 17.1-17.3).
 
 Usage::
 
     venv\\Scripts\\python.exe scripts\\acceptance.py SCENE_DIR batch
     venv\\Scripts\\python.exe scripts\\acceptance.py SCENE_DIR realtime [--from 100] [--to 400]
 
-``SCENE_DIR`` comes from ``scripts/make_scene.py`` (Segments, cameras.yaml, rules.yaml,
-ground_truth.yaml). Both modes use the real detector, embedder, tracker and rules in a fresh
+``SCENE_DIR`` comes from ``scripts/make_scene.py`` or, for real footage, from
+``scripts/prepare_footage.py`` plus your labels (Segments, cameras.yaml, rules.yaml,
+ground_truth.yaml; format in :mod:`nab_sentry.scene_truth`). Both modes use the real detector, embedder, tracker and rules in a fresh
 data folder under ``SCENE_DIR/run_<mode>/``.
 
 * ``batch`` ingests every Segment as fast as possible and reports: rule precision and recall
@@ -15,7 +16,8 @@ data folder under ``SCENE_DIR/run_<mode>/``.
   gate efficiency (passed / sampled frames while the scene is idle), ingest speed, CPU time
   and peak memory.
 * ``realtime`` replays the Segments between ``--from`` and ``--to`` seconds at real-time pace -
-  each file appears in the watched folder when its 10 s are over, renamed to the current wall
+  each file appears in the watched folder when its time is over (Segment times come from the
+  file names, so uneven real Segments and gaps replay as recorded), renamed to the current wall
   clock as the Recorder would name it - while the Watcher and the Notifier run as in production
   (the Notifier with a transport that records instead of calling Telegram). It reports the
   alert latency: from the moment the event happened in the replay to the moment the alert
@@ -53,6 +55,7 @@ from nab_sentry.ingest.pipeline import IngestPipeline  # noqa: E402
 from nab_sentry.live.camera_config import load_cameras  # noqa: E402
 from nab_sentry.model_files import default_detector_factory, default_encoder_factory  # noqa: E402
 from nab_sentry.rules.config import load_rules  # noqa: E402
+from nab_sentry.scene_truth import SceneTruthError, load_scene_truth, segment_offsets  # noqa: E402
 from nab_sentry.startup import require_models  # noqa: E402
 from nab_sentry.store.db import MetadataStore  # noqa: E402
 from nab_sentry.store.vector_index import VectorIndex  # noqa: E402
@@ -121,6 +124,24 @@ def build(scene: Path, run: Path, rules: bool = True):
     return cfg, db, pipe, cameras, rule_list
 
 
+def load_truth(scene: Path) -> dict:
+    rules = yaml.safe_load((scene / "rules.yaml").read_text(encoding="utf-8")) or {}
+    return load_scene_truth(scene / "ground_truth.yaml", [r.get("id") for r in rules.get("rules") or []])
+
+
+def replay_plan(offsets: Sequence[tuple[Path, float]], seg_s: float, t_from: float,
+                t_to: float) -> list[tuple[Path, float, float]]:
+    """``(segment, offset, duration)`` of the Segments starting in ``[t_from, t_to)``. A
+    Segment's duration is the gap to the next one, or ``seg_s`` before a gap or at the end."""
+    plan = []
+    for k, (path, off) in enumerate(offsets):
+        nxt = offsets[k + 1][1] if k + 1 < len(offsets) else None
+        dur = nxt - off if nxt is not None and 0 < nxt - off <= 3 * seg_s else float(seg_s)
+        if t_from <= off < t_to:
+            plan.append((path, off, dur))
+    return plan
+
+
 def offset_of(gt: dict, epoch_ms: int, start: datetime | None = None) -> float:
     base = start or datetime.fromisoformat(gt["start"])
     return epoch_ms / 1000 - base.timestamp()
@@ -130,7 +151,7 @@ def offset_of(gt: dict, epoch_ms: int, start: datetime | None = None) -> float:
 
 
 def run_batch(scene: Path, tol: float) -> dict:
-    gt = yaml.safe_load((scene / "ground_truth.yaml").read_text(encoding="utf-8"))
+    gt = load_truth(scene)
     cfg, db, pipe, _, _ = build(scene, scene / "run_batch")
     for f in sorted((scene / "videos").glob("*.mkv")):
         shutil.copy2(f, cfg.videos_dir / f.name)
@@ -217,12 +238,14 @@ def run_realtime(scene: Path, t_from: float, t_to: float, tol: float) -> dict:
     from nab_sentry.notify.service import Notifier
     from nab_sentry.notify.telegram import TelegramClient
 
-    gt = yaml.safe_load((scene / "ground_truth.yaml").read_text(encoding="utf-8"))
+    gt = load_truth(scene)
     cfg, db, pipe, cameras, rules = build(scene, scene / "run_realtime")
     seg_s = cameras[0].segment_s
-    segs = sorted((scene / "videos").glob("*.mkv"))
-    first, last = int(t_from // seg_s), int(min(gt["duration_s"], t_to) // seg_s)
-    segs = segs[first:last]
+    offsets = segment_offsets(sorted((scene / "videos").glob("*.mkv")), datetime.fromisoformat(gt["start"]))
+    plan = replay_plan(offsets, seg_s, t_from, min(gt["duration_s"], t_to))
+    if not plan:
+        raise SystemExit(f"error: no Segment starts between {t_from:g} and {t_to:g} s")
+    w_start, w_end = plan[0][1], plan[-1][1] + plan[-1][2]
     replay_start = datetime.now().replace(microsecond=0) + timedelta(seconds=2)
     wall0 = replay_start.timestamp()
 
@@ -239,17 +262,17 @@ def run_realtime(scene: Path, t_from: float, t_to: float, tol: float) -> dict:
     wt.start()
     nt.start()
     try:
-        for k, src in enumerate(segs):
-            closes_at = wall0 + (k + 1) * seg_s  # the Recorder closes Segment k at this time
+        for k, (src, off, dur) in enumerate(plan):
+            closes_at = wall0 + (off - w_start) + dur  # the Recorder closes the Segment at this time
             time.sleep(max(0.0, closes_at - time.time()))
             m = FILENAME_RE.match(src.name)
-            name = f"{m.group('cam')}_{(replay_start + timedelta(seconds=k * seg_s)):%Y%m%dT%H%M%S}.mkv"
+            name = f"{m.group('cam')}_{(replay_start + timedelta(seconds=off - w_start)):%Y%m%dT%H%M%S}.mkv"
             shutil.copy2(src, cfg.videos_dir / name)
-            print(f"  segment {k + 1}/{len(segs)} closed", flush=True)
+            print(f"  segment {k + 1}/{len(plan)} closed", flush=True)
         deadline = time.time() + 60  # let the last Segment be ingested and the alerts go out
         while time.time() < deadline:
             pending = [a for a in ndb.due_alerts(2**62, 1000)]
-            done = watcher.done and len(watcher.done) >= len(segs)
+            done = watcher.done and len(watcher.done) >= len(plan)
             if done and not pending:
                 break
             time.sleep(1)
@@ -265,7 +288,7 @@ def run_realtime(scene: Path, t_from: float, t_to: float, tol: float) -> dict:
         call_times = [ts for ts, _method, _data in tr.sent]
         latencies, alerts = [], []
         for aid, rule, ms, mid in rows:
-            t_scene = offset_of(gt, ms, replay_start) + first * seg_s
+            t_scene = offset_of(gt, ms, replay_start) + w_start
             alerts.append({"rule": rule, "t": t_scene})
             event_wall = ms / 1000
             sent_wall = call_times[mid - 1]
@@ -274,10 +297,10 @@ def run_realtime(scene: Path, t_from: float, t_to: float, tol: float) -> dict:
         # the wrong time of day: leave them out of the real-time comparison.
         scheduled = {r.id for r in rules if r.schedule is not None}
         expected = [a for a in gt["expected_alerts"]
-                    if first * seg_s <= a["t"] < last * seg_s and a["rule"] not in scheduled]
+                    if w_start <= a["t"] < w_end and a["rule"] not in scheduled]
         alerts = [a for a in alerts if a["rule"] not in scheduled]
         scores = match_alerts(expected, alerts, tol)
-        report = {"window_s": [first * seg_s, last * seg_s], "segments": len(segs),
+        report = {"window_s": [w_start, w_end], "segments": len(plan),
                   "rules_left_out": sorted(scheduled),
                   "alerts": scores,
                   "latency_s": {"n": len(latencies),
@@ -298,8 +321,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--to", dest="t_to", type=float, default=1e9)
     p.add_argument("--tolerance", type=float, default=TOLERANCE_S)
     args = p.parse_args(argv)
-    if not (args.scene / "ground_truth.yaml").is_file():
-        print(f"error: {args.scene} is not a make_scene.py output", file=sys.stderr)
+    missing = [n for n in ("ground_truth.yaml", "cameras.yaml", "rules.yaml", "videos")
+               if not (args.scene / n).exists()]
+    if missing:
+        print(f"error: {args.scene} has no {', '.join(missing)} (make it with make_scene.py or "
+              f"prepare_footage.py)", file=sys.stderr)
+        return 1
+    try:
+        load_truth(args.scene)
+    except SceneTruthError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
     report = (run_batch(args.scene, args.tolerance) if args.mode == "batch"
               else run_realtime(args.scene, args.t_from, args.t_to, args.tolerance))

@@ -13,7 +13,9 @@
 # and belongs to the day it starts on (mon 22:00-06:00 = Monday 22:00 to Tuesday 06:00).
 # debounce (default 2): consecutive qualifying observations at the tracking rate (3 fps).
 # cooldown_s (default 300): no second alert of the same rule on the camera within this time.
-# severity: immediate (send at once) | verify (Step 3: check with the VLM first; for now = immediate)
+# severity: immediate (send at once) | verify (first ask the local VLM the rule's `verify:` yes/no
+#   question about the snapshot; a 'no' keeps the alert from being sent. Needs scripts\notify.py --vlm
+#   (run_live.ps1 -Vlm); without it the alert is sent marked 'not verified')
 rules:
   - id: yard-night
     name: Person in the yard at night
