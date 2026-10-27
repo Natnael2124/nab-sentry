@@ -1,0 +1,76 @@
+# Attribute labels for detector crops of the Compilation_Video (scripts/attr_eval.py, V2 Step 4).
+# Labelled by Claude on 2026-10-27 from data/bench/attrs/label_*.jpg (made by `attr_eval.py sheet`),
+# before looking at any model's tags. Keys are vector IDs of data/nab_sentry.db.
+# a|b = either is right (silver and grey are not told apart; light blue may read as either);
+# ? = cannot tell, or not that kind of object (detector false positives: fence, cat, bed).
+crops:
+  214: {class: person, top_colour: black}
+  225: {class: person, top_colour: "?"}          # child swimming, no top
+  236: {class: person, top_colour: yellow|green}  # neon yellow-green
+  349: {class: person, top_colour: "?"}          # fence
+  362: {class: person, top_colour: "?"}          # fence
+  367: {class: person, top_colour: "?"}          # fence
+  406: {class: person, top_colour: "?"}          # person in bed, night IR
+  418: {class: person, top_colour: "?"}          # blur
+  446: {class: person, top_colour: red}
+  461: {class: person, top_colour: "?"}          # railing
+  537: {class: person, top_colour: "?"}          # cat
+  545: {class: person, top_colour: "?"}          # cat
+  557: {class: person, top_colour: red}
+  569: {class: person, top_colour: red}
+  585: {class: person, top_colour: red}
+  592: {class: person, top_colour: blue}
+  632: {class: person, top_colour: white}
+  639: {class: person, top_colour: "?"}          # washed out
+  650: {class: person, top_colour: "?"}          # mostly the stroller
+  657: {class: person, top_colour: black}
+  689: {class: person, top_colour: "?"}          # blur
+  705: {class: person, top_colour: blue|grey}    # barber's cape
+  712: {class: person, top_colour: grey}
+  722: {class: person, top_colour: black|grey}
+  728: {class: person, top_colour: black}
+  733: {class: person, top_colour: "?"}          # silhouette in fog
+  829: {class: person, top_colour: "?"}          # faded
+  851: {class: person, top_colour: black}
+  874: {class: person, top_colour: black}
+  888: {class: person, top_colour: "?"}          # orange: not one of the tags
+  905: {class: person, top_colour: blue|white}   # light blue shirt
+  918: {class: person, top_colour: blue|grey}
+  924: {class: person, top_colour: white}
+  929: {class: person, top_colour: black}
+  941: {class: person, top_colour: grey}
+  953: {class: person, top_colour: white}
+  963: {class: person, top_colour: black}
+  188: {class: car, colour: silver|grey, type: "?"}      # compact wagon
+  207: {class: car, colour: "?", type: "?"}              # blur
+  242: {class: car, colour: "?", type: pickup}           # dark green: not one of the tags
+  259: {class: car, colour: red, type: sedan}
+  276: {class: car, colour: white, type: sedan}
+  295: {class: car, colour: silver|grey, type: sedan}
+  306: {class: car, colour: white, type: SUV}
+  314: {class: car, colour: white, type: SUV}
+  323: {class: car, colour: white, type: SUV}
+  387: {class: car, colour: "?", type: "?"}              # blur
+  409: {class: car, colour: white, type: van|SUV}
+  414: {class: car, colour: white, type: van|SUV}
+  445: {class: car, colour: blue|silver, type: sedan}
+  460: {class: car, colour: blue|silver, type: sedan}
+  469: {class: car, colour: silver|grey|blue, type: pickup}
+  476: {class: car, colour: silver|grey|blue, type: pickup}
+  498: {class: car, colour: silver|grey|blue, type: pickup}
+  518: {class: car, colour: "?", type: "?"}              # not a car
+  524: {class: car, colour: silver|grey, type: van}
+  530: {class: car, colour: silver|grey, type: van}
+  555: {class: car, colour: white, type: sedan}
+  567: {class: car, colour: white, type: sedan}
+  583: {class: car, colour: white, type: sedan}
+  608: {class: car, colour: white, type: van}
+  614: {class: car, colour: blue, type: SUV}
+  667: {class: car, colour: "?", type: "?"}              # blur
+  683: {class: car, colour: white, type: "?"}
+  747: {class: car, colour: white, type: SUV}
+  776: {class: car, colour: white, type: SUV}
+  801: {class: car, colour: white, type: SUV}
+  826: {class: truck, colour: red, type: "?"}            # fire truck
+  853: {class: car, colour: white, type: "?"}
+  919: {class: car, colour: black|blue, type: sedan}

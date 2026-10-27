@@ -63,6 +63,7 @@ from nab_sentry.startup import enable_offline_mode  # noqa: E402  (stdlib-only)
 enable_offline_mode()
 
 from nab_sentry.config import Config, ConfigError, load_config, parse_set_args  # noqa: E402
+from nab_sentry.embed.compat import EmbedderMismatch  # noqa: E402
 from nab_sentry.errors import ModelMissingError  # noqa: E402
 from nab_sentry.ingest.pipeline import VIDEO_EXTENSIONS, IngestPipeline  # noqa: E402
 from nab_sentry.logging_setup import get_logger, setup_logging  # noqa: E402
@@ -78,7 +79,7 @@ EXIT_INDEX = 5
 EXIT_MODEL_LOAD = 6
 EXIT_INTERRUPTED = 130
 
-EMBEDDER_REL = "open_clip/ViT-B-32-laion2b_s34b_b79k/open_clip_pytorch_model.bin"
+from nab_sentry.model_files import EMBEDDER_REL  # noqa: E402  (the one embedder, V2 Step 4)
 
 # (cfg, manifest files rel->abs) -> Encoder / Detector
 EncoderFactory = Callable[[Config, dict[str, Path]], Any]
@@ -284,7 +285,11 @@ def _run(
         cams = camera_specs(args.cameras)
         if cams:
             kw["cameras"] = cams
-        pipeline = IngestPipeline(cfg, db, index, encoder, detector, **kw)
+        try:
+            pipeline = IngestPipeline(cfg, db, index, encoder, detector, **kw)
+        except EmbedderMismatch as exc:
+            _err(str(exc))
+            return EXIT_INDEX
         pipeline.reconcile()
         if args.watch:
             return _watch(cfg, pipeline, segment_lengths(args.cameras), args.poll_s,

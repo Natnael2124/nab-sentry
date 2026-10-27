@@ -98,9 +98,10 @@ Which frames are "on the Sample_Rate cadence": with Track_Rate = k × Sample_Rat
 
 | Field | Default | Allowed | Notes |
 |---|---|---|---|
-| `motion_roi` | `None` | 4 floats in 0..1, x1<x2, y1<y2 | Per camera from Camera_Config; Config value is the fallback |
+| (`roi` in Camera_Config) | whole frame | 4 floats in 0..1, x1<x2, y1<y2 | Implemented per camera only (no Config field); decided with task 3.6 |
+| `motion_method` / `motion_threshold` | diff / 0.02 | unchanged from V1 | decided (README "Decisions"): 0 missed incidents at every diff threshold, idle cost at the keyframe floor |
 | `track_rate` | 3.0 | 1..30, ≥ `sample_rate` | 11% detector busy per active camera at 384x640 (task 4.3) |
-| `det_input_h` / `det_input_w` | 384 / 640 | multiples of 32, 32..1920 | rectangular letterbox for 16:9 cameras |
+| `det_input_h` / `det_input_size` (width) | 384 / 640 | 32..1920 | rectangular letterbox for 16:9 cameras |
 | `det_threads` | 2 | 1..16 | 4 threads gain only 5-10% |
 | `det_low_conf` | 0.1 | 0..1, ≤ `det_conf` | |
 | `track_match_iou` | 0.3 | 0.05..0.95 | |
@@ -114,6 +115,8 @@ Which frames are "on the Sample_Rate cadence": with Track_Rate = k × Sample_Rat
 | `camera_offline_factor` | 3.0 | 1.5..100 | |
 | `disk_low_gb` | 10.0 | ≥ 0 | |
 | `retention_days` / `alert_retention_days` | 7 / 30 | 1..3650 | |
+| `vlm_host` / `vlm_model` / `vlm_timeout_s` | 127.0.0.1:11434 / qwen3-vl:2b-instruct / 180 | loopback only; 10..900 s | Step 3, on demand |
+| (embedder, `nab_sentry.model_files`) | ViT-B/32 `datacomp_xl_s13b_b90k` | not a Config field | Step 4; stored as `schema_meta.embed_model` and checked |
 
 There are no cross-field errors: V1 Property 11 requires every config made of in-range values to be valid, and a V1 user who lowers `det_conf` or raises `sample_rate` must not get errors about fields they never set. Instead `effective_low_conf(cfg) = min(det_low_conf, det_conf)` and `effective_track_rate(cfg) = max(track_rate, sample_rate)` are the values used.
 

@@ -21,7 +21,7 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
   - [ ] 1.3 Re-run once with the Windows "Best performance" power mode to bound the power-plan effect; record both
     - _Requirements: 1.1_
 
-- [ ] 2. Ground truth
+- [x] 2. Ground truth
   - [x] 2.1 Implement `scripts/contact_sheet.py VIDEO` (1 thumbnail/s stamped with offset, sheets of 60 under `data/bench/contact/`, suggested scene cuts with red borders, Ground_Truth_File template)
     - _Requirements: 2.1_
   - [x] 2.2 Implement `nab_sentry/ground_truth.py` loader + validation
@@ -29,13 +29,16 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
   - [x] 2.3 Property test: every single invalid entry is reported exactly once by name
     - File: `tests/test_ground_truth.py`
     - _Requirements: 2.3_
-  - [ ] 2.4 **(Integrator)** Label the Compilation_Video: scene cuts + Incidents into `eval/ground_truth/CAM-SEC01.yaml` (start from `data/bench/contact/CAM-SEC01_20261007T230010/CAM-SEC01.yaml`; 45 suggested cuts, some false where the camera is bumped)
+  - [x] 2.4 **(Integrator)** Label the Compilation_Video: scene cuts + Incidents into `eval/ground_truth/CAM-SEC01.yaml` (start from `data/bench/contact/CAM-SEC01_20261007T230010/CAM-SEC01.yaml`; 45 suggested cuts, some false where the camera is bumped)
+    - Labelled by Claude (2026-10-23): 37 cuts, 25 incidents; the user may re-check
     - _Requirements: 2.2_
-  - [ ] 2.5 **(Integrator)** Replace the TODO entries in `eval/queries.yaml` with real queries; run `scripts/evaluate.py` and record recall@k / MRR as the V1 search baseline
+  - [x] 2.5 **(Integrator)** Replace the TODO entries in `eval/queries.yaml` with real queries; run `scripts/evaluate.py` and record recall@k / MRR as the V1 search baseline
+    - Done by Claude as `eval/queries_compilation.yaml` (task 20.1); real-camera queries still welcome
     - _Requirements: 2.4_
 
-- [ ] 3. Motion gate ROI and sweep
-  - [ ] 3.1 Add optional ROI (normalized rectangle) to `MotionGate` and `Config.motion_roi`
+- [x] 3. Motion gate ROI and sweep
+  - [x] 3.1 Add optional ROI (normalized rectangle) to `MotionGate` and `Config.motion_roi`
+    - Done per camera (`roi` in Camera_Config, `MotionGate(roi=...)`); no Config-wide field
     - _Requirements: 3.1_
   - [x] 3.2 Property tests: ROI = full frame equals V1 decisions (Property 3); changes outside ROI never pass (Property 4)
     - File: `tests/test_motion_roi.py`
@@ -72,14 +75,15 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
   - [x] 5.1 Write the decision note in the README: gate settings, Track_Rate + detector input size, Segment_Length, cameras per laptop without VLM, local vs cloud VLM for Step 3 — each citing its measurement
     - Done: README 'Decisions (V2 Step 1)'. Efficiency evidence comes from the generated scene until real Continuous_Footage exists
     - _Requirements: 5.1_
-  - [ ] 5.2 Update Config defaults in this spec's design to the decided values
+  - [x] 5.2 Update Config defaults in this spec's design to the decided values
+    - Done 2026-10-27 (design "config.py" table)
   - [ ] 5.3 Checkpoint: review decisions with the product owner
   - [ ] 5.4 **(Integrator)** Record ≥ 1 h of Continuous_Footage of one fixed view (phone or IP camera, mostly idle, ideally including a lighting change) and label it; this unblocks 3.6, 17.3
     - Tooling ready: `scripts/prepare_footage.py` (segments + contact sheets with clock times + ground_truth.yaml template), `nab_sentry/scene_truth.py` (clock-time labels), acceptance.py / gate_sweep.py take real segment times from file names; steps in docs/REAL_FOOTAGE_AND_TELEGRAM.md
 
 ### Phase B1: Live input
 
-- [ ] 6. Camera configuration
+- [x] 6. Camera configuration
   - [x] 6.1 Implement `nab_sentry/live/camera_config.py` (`CameraSpec`, `load_cameras`, `CameraConfigError`, `mask_url`) and `config/cameras.example.yaml`
     - _Requirements: 6.1, 6.2, 6.4_
   - [x] 6.2 Property tests: round trip and one issue per invalid field (Property 6); URL masking (Property 7)
@@ -88,7 +92,7 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
     - Not yet run against a real camera (needs `config/cameras.yaml` and the Integrator's OK to switch a camera on)
     - _Requirements: 6.3_
 
-- [ ] 7. Recorder
+- [x] 7. Recorder
   - [x] 7.1 Verify the bundled imageio-ffmpeg supports `-f dshow` and RTSP over TCP on this machine; if not, add a pinned ffmpeg to `models/bin/` via `fetch_models.py`
     - ffmpeg 7.1 (gyan essentials): dshow, rtsp demuxer, segment + matroska muxers, libx264 and **h264_qsv** (Intel Quick Sync works on the i5-1145G7: about half the file size of x264 veryfast). The laptop webcam and the phone (Windows virtual camera) show up as dshow devices. Segment names have 1 s resolution, so sources must run in real time
   - [x] 7.2 Implement `nab_sentry/live/recorder.py`: pure `recorder_command` (copy for RTSP, x264 + forced keyframes for dshow), `backoff(n)`, heartbeat writer; `scripts/record.py [CAMERA_ID ...]`
@@ -113,7 +117,7 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
 
 ### Phase B2: Tracking
 
-- [ ] 9. Detector and Track_Rate path
+- [x] 9. Detector and Track_Rate path
   - [x] 9.0 Rectangular detector input: generalise `letterbox` to `(h, w)`, add `det_input_h` / `det_input_w` to Config (default 384 x 640; `det_input_size` kept as the square shorthand), export `yolo11n_384x640.onnx` in `fetch_models.py` and add it to the manifest, default detector threads 2; update detector tests (letterbox round trip for rectangles)
     - Done 2026-10-18. Config: `det_input_size` stays the width, new `det_input_h` (default 384) and `det_threads` (default 2). `OnnxYoloDetector` accepts `(h, w)` and refuses an ONNX file exported for another shape. `fetch_models.py` exports `yolo11n.onnx` + `yolo11n_384x640.onnx` and has `--export-only` (offline re-export from `yolo11n.pt`). Local models re-exported: the new 640 export gives identical boxes to the original on 40 frames; the 384x640 default agrees on 94.9% of boxes at 33.7 ms vs 48-51 ms
   - [x] 9.1 `Detection.high`; detector keeps ≥ `det_low_conf`; crop path uses only high; Config fields `det_low_conf`, `track_rate` with cross-field checks
@@ -128,7 +132,7 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
     - File: `tests/test_pipeline_track_rate.py`
     - _Requirements: 9.3_
 
-- [ ] 10. Tracker
+- [x] 10. Tracker
   - [x] 10.1 Implement `nab_sentry/track/bytetrack.py` (two-pass greedy IoU per class, constant-velocity prediction, min hits, buffer expiry, `end_all`, snapshot/restore)
     - Done 2026-10-18. Tentative tracks die at their first miss (ByteTrack); confirmed ones after `buffer_s` without a match. Tracker clock is absolute seconds (`begin_video(start)`) so tracks can span Segments. `drain()` hands out each observation once, back-filling hits from before confirmation. Track keys are tracker-local; mapping to `tracks.track_id` happens in task 11.3
     - Real detector at 3 fps over the whole Compilation_Video, reset at the 45 suggested cuts: 414 tracks started, 245 dropped as tentative (one-off detections), 169 confirmed (73 person, 76 car, 16 truck, 2 bicycle, 2 motorcycle; median 3-5 s, max 19 s). Tracker step 0.06 ms median. Fragmentation (one person split into several tracks) still to be measured against labels (11.5)
@@ -140,7 +144,7 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
     - Property: videos that roll back leave no trace (== feeding only committed ones); pipeline failure at every checkpoint then retry == clean run. Real models, 40 s as one file vs four 10 s Segments: both 6 confirmed tracks and 5 scene cuts (matching the contact-sheet cuts); tracks continue across a Segment boundary
     - _Requirements: 10.4, 10.5_
 
-- [ ] 11. Schema v2 and track storage
+- [x] 11. Schema v2 and track storage
   - [x] 11.1 Migration v1 → v2 in `MetadataStore.open` (tables `tracks`, `track_obs`; `vectors.track_id`)
     - Done 2026-10-22. Scope change: the alert tables (`alerts`, `alert_messages`, `rule_mutes`, `kv`) move to a v3 migration in task 13.4, so their shape follows the rule engine instead of being guessed now. `MIGRATIONS` in `store/db.py`; new databases are created at v1 and migrated (one code path); each step re-reads the version inside `BEGIN IMMEDIATE`; a newer database raises `SchemaVersionError`. A copy of the real V1 database (6 cameras, 1 video, 269 frames, 812 vectors) migrated with all rows unchanged, integrity and foreign-key checks clean
     - _Requirements: 11.1_
@@ -151,7 +155,8 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
     - _Requirements: 10.6, 10.7_
   - [x] 11.4 Extend the V1 rollback tests: failure at every checkpoint leaves no track rows and restores live state (`tests/test_pipeline_tracks.py`: failure at every checkpoint of Segment 2 then retry == clean run, by content)
     - File: `tests/test_pipeline_rollback.py`
-  - [ ] 11.5 Slow sanity: real YOLO + tracker on the Compilation_Video; no track spans a labelled scene cut; ID count within 2x of labelled people
+  - [x] 11.5 Slow sanity: real YOLO + tracker on the Compilation_Video; no track spans a labelled scene cut; ID count within 2x of labelled people
+    - `tests/test_tracks_real_footage.py`, against Claude's labels (2.4); passes
     - Test written (`tests/test_tracks_real_footage.py`, first 120 s), **skipped until the Integrator's labels exist (2.4)**; validated with temporary labels. Cuts count at about ±1 s (the cut labelled 104.0 really happens at about 104.1 s)
     - Full Compilation_Video with real models (2026-10-22): 166 tracks, 2,349 observations, n_obs consistent; 88% of crops linked; 39 scene cuts detected. Against the contact sheet's suggested cuts, 5 tracks seemed to span a cut, all checked by eye: the cuts were false (a minivan backing out at 49 s, the cat at 188-189 s, a person covering a doorbell lens at 321 s), so 0 real crossings. Track 80 is the cat confirmed as a "person" for 7 s: a persistent detector false positive the tentative filter cannot catch
     - Cost: 247 s to ingest 387 s of footage busy every second (AC power, CPU at 1.5 GHz), i.e. ~1.5 continuously busy cameras per laptop; input for decision 5.1
@@ -161,14 +166,14 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
 
 ### Phase B3: Zones, rules, outbox
 
-- [ ] 12. Geometry
+- [x] 12. Geometry
   - [x] 12.1 Implement `nab_sentry/rules/geometry.py` (`anchor`, `point_in_polygon`, `side`, `crossing`)
     - Line direction: crossing to the left of the arrow `a -> b` as seen on screen is `+1` ("in"). `crossing` needs both endpoints strictly off the line; the rule engine passes the last off-line position so pausing on the line still counts
     - _Requirements: 12.1, 12.2_
   - [x] 12.2 Property tests (Properties 13, 14): point-in-polygon matches OpenCV on random star-shaped (often non-convex) polygons; reversing a movement negates the crossing; a crossing's intersection lies within both segments
     - File: `tests/test_geometry.py`
 
-- [ ] 13. Rules
+- [x] 13. Rules
   - [x] 13.1 Implement `rules.yaml` loader with validation against Camera_Config (`nab_sentry/rules/config.py`, `config/rules.example.yaml`; `ingest.py --rules`, a bad rule exits 2 before models load)
     - _Requirements: 12.6_
   - [x] 13.2 Implement `in_schedule` and pure `evaluate` (enter, dwell, cross, count; debounce; once per track; cooldown) (`nab_sentry/rules/engine.py`)
@@ -187,13 +192,13 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
 
 ### Phase B4: Delivery
 
-- [ ] 14. Alert media
+- [x] 14. Alert media
   - [x] 14.1 Implement `nab_sentry/alerts/media.py` (`draw_snapshot`) and `nab_sentry/alerts/clips.py` (pure `covering`, `clip_status`, `clip_command` with the concat demuxer and in/out points)
     - _Requirements: 13.1, 13.2_
   - [x] 14.2 Tests: clip window spanning 1 and 2 Segments; real ffmpeg joins two Segments into a ~5 s clip (red then blue), no temp files left
     - File: `tests/test_alert_media.py`
 
-- [ ] 15. Notifier
+- [x] 15. Notifier
   - [x] 15.1 Implement `nab_sentry/notify/telegram.py` (`TelegramClient` with injectable transport, 429 handling) and `FakeTelegramTransport` in `tests/fakes.py`; the bot token is masked in every error (httpx puts URLs into exceptions)
     - _Requirements: 14.3_
   - [x] 15.2 Implement the alert state machine with per-(alert, chat, step) message IDs and backoff (`nab_sentry/notify/outbox.py`: photo -> clip as a reply -> sent; retry_after not counted; health alerts as text)
@@ -250,6 +255,18 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
   - [x] 19.2 `/describe ACTIVITY_ID` with caching
   - [x] 19.3 Rules with `verify:` question; Notifier verification step, never suppressing on VLM failure. A 'no' stores the alert as `suppressed` with the VLM's answer in `note` (no new state: changing the CHECK would need a table rebuild); immediate alerts go first, at most one verification per tick
   - [x] 19.4 Tests with a fake VLM; one slow test against the real Ollama model when it is installed
+
+### Phase D: Step 4 - embedder evaluation and change
+
+- [x] 20. Embedder
+  - [x] 20.1 Real search queries for the Compilation_Video (`eval/queries_compilation.yaml`, 20 queries from the scene labels; also closes 2.5). V1 baseline with `scripts/evaluate.py`: hit@1 0.70, p@5 0.20 (capped: one relevant scene per query)
+  - [x] 20.2 `scripts/embed_eval.py`: re-encode the stored frames and crops with each candidate (encode step can run in another venv) and score with the product's SearchEngine and the evaluator's relevance; hit@1 / hit@3 / MRR, speed, memory. Harness reproduces the product's result exactly
+  - [x] 20.3 Candidates on the Target_Hardware: ViT-B/32 laion2b (0.821 MRR, 104 ms/image), **ViT-B/32 DataComp-XL (0.879, 108 ms)**, ViT-B/32-256 DataComp (0.823, 136 ms), SigLIP 2 B/16 (0.925, 477 ms, 4.4 GB), EmbeddingGemma 2 (0.879 at 70 image tokens, 2.4 s/image; 12.5 s at the default 280), MobileCLIP2 S0/S2/B (0.842-0.900; research-only licence, not shippable)
+  - [x] 20.4 Decision: DataComp-XL - same architecture, dimension and speed, never worse on any query, better on 3. SigLIP 2 too slow for live ingest; EmbeddingGemma 2 far too slow on this CPU
+  - [x] 20.5 One embedder per store: `schema_meta.embed_model` checked before ingest and search (`nab_sentry/embed/compat.py`); an empty store adopts the configured embedder
+  - [x] 20.6 `scripts/reembed.py`: re-encode stored frames/crops from the sources, keep every row and ID, atomic index swap, refuses on missing sources unless `--drop-missing`. Live store: 812 vectors in 86 s, then evaluate.py hit@1 0.80 as predicted
+  - [x] 20.7 Attribute tags re-checked on 51 hand-labelled crops (`scripts/attr_eval.py`, `eval/attributes_compilation.yaml`): colours equal; vehicle type got worse (9 wrong of 20) until SUV and van were merged into one tag "SUV/van" (4 wrong of 20); every group above 70% at the 0.65 minimum
+  - [x] 20.8 `fetch_models.py` downloads the new checkpoint (safetensors); README "Embedder" section with results, upgrade steps and the model-card usage notes
 
 ## Notes
 

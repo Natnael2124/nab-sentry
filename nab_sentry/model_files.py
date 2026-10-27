@@ -13,7 +13,16 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from nab_sentry.config import Config
 
-EMBEDDER_REL = "open_clip/ViT-B-32-laion2b_s34b_b79k/open_clip_pytorch_model.bin"
+# The one image/text embedder (V2 Step 4: DataComp-XL replaced laion2b, same architecture and
+# dimension; see README "Embedder"). EMBEDDER_ID is stored with the index: vectors of
+# another embedder are never mixed in (scripts/reembed.py converts a store).
+EMBEDDER_ARCH = "ViT-B-32"
+EMBEDDER_TAG = "datacomp_xl_s13b_b90k"
+EMBEDDER_REPO = "laion/CLIP-ViT-B-32-DataComp.XL-s13B-b90K"
+EMBEDDER_FILE = "open_clip_model.safetensors"
+EMBEDDER_ID = f"{EMBEDDER_ARCH}/{EMBEDDER_TAG}"
+EMBEDDER_REL = f"open_clip/{EMBEDDER_ARCH}-{EMBEDDER_TAG}/{EMBEDDER_FILE}"
+LEGACY_EMBEDDER_ID = "ViT-B-32/laion2b_s34b_b79k"  # V1 and V2 up to Step 3
 DETECTOR_REL = "yolo11n.onnx"  # square 640 x 640 input (V1)
 # ONNX input shapes (height, width) exported by scripts/fetch_models.py. ONNX exports are
 # static, so each shape is its own file (V2 task 9.0; 384 x 640 suits 16:9 cameras).

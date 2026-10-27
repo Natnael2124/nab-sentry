@@ -77,3 +77,22 @@ def test_phrases_and_default_groups():
     assert phrase("truck", {}) == "truck"
     assert {g.name for g in DEFAULT_GROUPS} == {"top colour", "colour", "type"}
     assert all(len(g.tags) == len(g.prompts) for g in DEFAULT_GROUPS)
+
+
+@given(st.lists(st.floats(0.0, 1.0), min_size=6, max_size=6).filter(lambda x: sum(x) > 0))
+def test_merged_tags_keep_the_probability_mass(raw):
+    from nab_sentry.describe.attributes import merge_by_tag
+
+    p = np.asarray(raw) / sum(raw)
+    tags = ("sedan", "pickup", "SUV/van", "SUV/van", "police car", "bus")
+    m = merge_by_tag(p, tags)
+    assert m.shape == (5,) and abs(m.sum() - 1.0) < 1e-9
+    assert abs(m[2] - (p[2] + p[3])) < 1e-12 and m[0] == p[0]
+
+
+def test_suv_and_van_are_one_tag():
+    from nab_sentry.describe.attributes import DEFAULT_GROUPS
+
+    g = {x.name: x for x in DEFAULT_GROUPS}["type"]
+    assert g.unique_tags == ("sedan", "pickup", "SUV/van", "police car", "bus")
+    assert len(g.tags) == len(g.prompts)

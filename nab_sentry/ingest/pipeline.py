@@ -40,6 +40,7 @@ import numpy as np
 
 from nab_sentry.config import Config, effective_track_rate
 from nab_sentry.embed.clip_encoder import EmbeddingError, Encoder
+from nab_sentry.embed.compat import check_embedder
 from nab_sentry.ingest.detector import Detection, Detector, clamp_box
 from nab_sentry.ingest.metadata import resolve_metadata, src_hash, to_aware_local
 from nab_sentry.ingest.motion import GateDecision, MotionGate
@@ -269,6 +270,7 @@ class IngestPipeline:
         rois: dict[str, tuple[float, float, float, float]] | None = None,
         cameras: Sequence[CameraSpec] = (),
     ) -> None:
+        check_embedder(db, encoder)  # never add vectors of another embedder to the index (Step 4)
         self.cfg = cfg
         self.db = db
         self.index = index

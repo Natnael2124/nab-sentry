@@ -23,13 +23,15 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
+from nab_sentry.model_files import EMBEDDER_ID
+
 if TYPE_CHECKING:  # avoid an import cycle once engine.py imports MetadataStore (task 11.8)
     from nab_sentry.search.engine import SearchFilter
 
 log = logging.getLogger(__name__)
 
 SCHEMA_VERSION = "4"
-EMBED_MODEL = "ViT-B-32/laion2b_s34b_b79k"
+EMBED_MODEL = EMBEDDER_ID  # written into a new store; checked by nab_sentry.embed.compat
 EMBED_DIM = "512"
 
 DDL = """
@@ -387,6 +389,19 @@ class MetadataStore:
                 [("schema_version", "1"), ("embed_model", EMBED_MODEL), ("dim", EMBED_DIM)],
             )
             self.migrate()
+
+    def embed_model(self) -> str | None:
+        """ID of the embedder whose vectors the store and index hold (``schema_meta``)."""
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM schema_meta WHERE key = 'embed_model'").fetchone()
+        return row[0] if row else None
+
+    def set_embed_model(self, model_id: str, dim: int) -> None:
+        with self._txn():
+            self._conn.executemany(
+                "INSERT INTO schema_meta(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [("embed_model", model_id), ("dim", str(int(dim)))])
 
     def schema_version(self) -> int:
         with self._lock:

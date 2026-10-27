@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any
 
 from nab_sentry.config import Config
+from nab_sentry.embed.compat import check_embedder
 from nab_sentry.logging_setup import get_logger
 from nab_sentry.search.engine import SearchEngine, SearchFilter
 from nab_sentry.store.db import MetadataStore
@@ -34,6 +35,7 @@ class TodaySearch:
     def __call__(self, words: str, from_s: float, to_s: float) -> list[dict]:
         if self._encoder is None:
             self._encoder = self.encoder_factory()
+            check_embedder(self.db, self._encoder)  # never search another embedder's vectors
         if not self.cfg.index_path.is_file():
             return []
         index = VectorIndex.load(self.cfg.index_path, DEFAULT_DIM)

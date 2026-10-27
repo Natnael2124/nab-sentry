@@ -14,6 +14,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from nab_sentry.model_files import EMBEDDER_REL
 from nab_sentry.config import Config
 from nab_sentry.embed.clip_encoder import EMBED_DIM, EmbeddingError, l2_normalize
 
@@ -100,7 +101,7 @@ def test_l2_normalize_rejects_empty() -> None:
 
 # --------------------------------------------------------------------------- slow part
 
-WEIGHTS_REL = ("open_clip", "ViT-B-32-laion2b_s34b_b79k", "open_clip_pytorch_model.bin")
+WEIGHTS_REL = tuple(EMBEDDER_REL.split("/"))
 
 
 @pytest.fixture(scope="module")

@@ -27,7 +27,7 @@ data/
   vectors.faiss      Vector_Index
 models/
   manifest.json      SHA-256 of every model file
-  open_clip/ViT-B-32-laion2b_s34b_b79k/open_clip_pytorch_model.bin
+  open_clip/ViT-B-32-datacomp_xl_s13b_b90k/open_clip_model.safetensors   image/text embedder
   yolo11n.pt         source weights for the ONNX exports
   yolo11n.onnx       detector, 640 x 640 input
   yolo11n_384x640.onnx  detector, 384 x 640 input (default, suits 16:9 cameras)
@@ -41,7 +41,7 @@ Run once on a machine with internet access:
 venv\Scripts\python.exe scripts\fetch_models.py
 ```
 
-This downloads the OpenCLIP ViT-B/32 (`laion2b_s34b_b79k`) weights and `yolo11n.pt` (3 attempts each), exports the detector once per input shape (`models\yolo11n.onnx` for 640 x 640 and `models\yolo11n_384x640.onnx` for 384 x 640), smoke-loads every file, and writes `models\manifest.json` last. Any failure exits 1, names the failing file, and leaves no manifest. Use `--models-dir <path>` to write elsewhere.
+This downloads the OpenCLIP ViT-B/32 (`datacomp_xl_s13b_b90k`) weights and `yolo11n.pt` (3 attempts each), exports the detector once per input shape (`models\yolo11n.onnx` for 640 x 640 and `models\yolo11n_384x640.onnx` for 384 x 640), smoke-loads every file, and writes `models\manifest.json` last. Any failure exits 1, names the failing file, and leaves no manifest. Use `--models-dir <path>` to write elsewhere.
 
 `--export-only` skips the downloads and re-exports the detector from the `yolo11n.pt` and OpenCLIP weights already in `models\`. Use it offline after an update adds a new input shape:
 
@@ -253,6 +253,69 @@ Activity log tags on the scene's 9 tracks, after the fixes in task 18.3: vehicle
 Step-by-step commands for recording, labelling and measuring real footage and for the live Telegram test: [docs/REAL_FOOTAGE_AND_TELEGRAM.md](docs/REAL_FOOTAGE_AND_TELEGRAM.md).
 
 Still open: the same runs on real continuous footage from the user's camera (the scene is generated, so lighting, compression and real people's movement are only approximated), and a real Telegram chat.
+
+## Embedder (V2 Step 4)
+
+**Search now uses OpenCLIP ViT-B/32 trained on DataComp-XL (`datacomp_xl_s13b_b90k`) instead of LAION-2B (`laion2b_s34b_b79k`).** It has the same architecture, the same 512-d vectors and the same speed, and it finds things better.
+
+### Upgrading an existing installation
+
+```powershell
+venv\Scripts\python.exe scripts\fetch_models.py      # downloads the new weights
+venv\Scripts\python.exe scripts\reembed.py           # converts the stored footage (stop run_live.ps1 first)
+```
+
+Until you run `reembed.py`, ingest and search refuse to run, with a message naming both embedders. Mixing two vector spaces in one index would make every search silently wrong.
+
+`reembed.py` re-encodes every stored frame and crop from its source video, at about 0.1 s per stored vector. It keeps every row, track, alert and activity, and replaces the index atomically. A store with no vectors switches by itself.
+
+### How the candidates were compared
+
+`scripts/embed_eval.py` re-encodes exactly the 812 images the product stored for the Compilation_Video (269 frames and 543 detector crops) with each candidate. It then runs the 20 queries of `eval/queries_compilation.yaml` through the product's own search: top-k, clustering into Events and padding. Each query has one relevant scene, so p@5 is capped at 0.2; the rank of the first relevant Event (hit@1, hit@3, MRR) is the measure.
+
+Speed is ms per image at batch 8 on the Target_Hardware, on AC power.
+
+| Model | Licence | hit@1 | hit@3 | MRR | ms/image | Peak RSS |
+|---|---|---|---|---|---|---|
+| ViT-B/32 laion2b (before) | MIT | 0.70 | 0.95 | 0.821 | 104 | 2.4 GB |
+| **ViT-B/32 DataComp-XL (now)** | MIT | **0.80** | 0.95 | **0.879** | 108 | 2.4 GB |
+| ViT-B/32-256 DataComp | MIT | 0.70 | 0.90 | 0.823 | 136 | 2.4 GB |
+| SigLIP 2 ViT-B/16-256 | Apache 2.0 | 0.85 | 1.00 | 0.925 | 477 | 4.4 GB |
+| EmbeddingGemma 2, 70 image tokens | Apache 2.0 | 0.80 | 0.95 | 0.879 | 2,441 | 3.7 GB |
+| EmbeddingGemma 2, default 280 tokens | Apache 2.0 | not run | | | ~12,500 | |
+| MobileCLIP2-S0 | research only | 0.75 | 0.95 | 0.842 | 96* | 1.9 GB |
+| MobileCLIP2-S2 | research only | 0.80 | 0.90 | 0.869 | 256* | 2.1 GB |
+| MobileCLIP2-B | research only | 0.85 | 0.95 | 0.900 | 355* | 2.5 GB |
+
+\* measured while another job was running, so somewhat slow.
+
+**Why DataComp-XL:**
+- It ranks the relevant scene at least as high as before on every one of the 20 queries, higher on 3 (police car at night, barber, front door), and lower on none.
+- It needs no code change beyond the weights.
+- Twenty queries is a small sample: the gain is 2 more queries right at hit@1.
+
+**Why not the others:**
+- **SigLIP 2** is the best, but 4.6x slower and needs 4.4 GB. At about 3 crops per busy second it would use more than one camera's whole CPU budget.
+- **EmbeddingGemma 2** matches DataComp-XL only at 23x the cost (2.4 s per image with the smallest image budget, 12.5 s by default). It cannot keep up with even one camera on this CPU.
+- **MobileCLIP2** weights are under Apple's research-only licence, which excludes products.
+
+### Attribute tags with the new embedder
+
+The activity log's tags come from the same embedder, so they were checked again: `scripts/attr_eval.py` on 51 hand-labelled crops of the Compilation_Video (70 picked; detector false positives and blurs left out) (`eval/attributes_compilation.yaml`), each tagged on its own at the product's minimum probability of 0.65:
+
+| Group | laion2b (before): right / wrong / no tag | DataComp-XL (now) |
+|---|---|---|
+| Person top colour (22 crops) | 16 / 2 / 4 | 16 / 1 / 5 |
+| Vehicle colour (28) | 18 / 3 / 7 | 18 / 3 / 7 |
+| Vehicle type (25) | 18 / 3 / 4 | 16 / 4 / 5 |
+
+- **SUV and van are now one tag, "SUV/van".** Both models confused them in both directions (SUVs read as vans, minivans as SUVs). With separate tags, DataComp-XL got vehicle type wrong 9 times out of 20 tags; merged, 4 out of 20.
+- **Every group is above the 70% bar of Requirement 4A.3.**
+- **On the generated scene, one silver car came out "black" (0.87).** Vehicle colour in poor light stays the weakest tag.
+
+### Usage notes from the model cards
+
+Both ViT-B/32 model cards (LAION) carry the MIT licence. They also say that "any deployed use case of the model - whether commercial or not - is currently out of scope" and that surveillance uses are out of scope. These are the authors' recommendations, not licence terms, and they applied equally to the previous checkpoint. NAB Sentry uses the embedder only for text search over the owner's own footage: no identification of people and no face recognition. Read the cards before deploying commercially.
 
 ## Security limitations
 

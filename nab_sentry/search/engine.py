@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from nab_sentry.embed.compat import EmbedderMismatch, check_embedder
 from nab_sentry.ingest.detector import TARGET_CLASSES
 from nab_sentry.search.clustering import ClusterHit, ClusterParams, Event, VideoInfo, cluster_hits
 from nab_sentry.store.db import MetadataStore, as_aware
@@ -113,6 +114,10 @@ class SearchEngine:
             return
         if self.index is None:
             raise SearchUnavailable("search unavailable: vector index is not loaded")
+        try:
+            check_embedder(self.db, self.encoder)
+        except EmbedderMismatch as exc:
+            raise SearchUnavailable(f"search unavailable: {exc}") from exc
         faiss_ids = np.unique(np.asarray(self.index.ids(), dtype=np.int64))
         db_ids = np.unique(np.asarray(self.db.vector_ids(), dtype=np.int64))
         if faiss_ids.shape != db_ids.shape or not np.array_equal(faiss_ids, db_ids):

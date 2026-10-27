@@ -13,15 +13,14 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from nab_sentry.model_files import EMBEDDER_REL
 from nab_sentry.config import Config
 from nab_sentry.embed.clip_encoder import EMBED_DIM, OpenClipEncoder
 from nab_sentry.errors import ModelMissingError
 from nab_sentry.startup import FETCH_HINT
 from tests.conftest import NetworkAttempt, NetworkGuard
 
-REAL_WEIGHTS = (
-    Config().models_dir / "open_clip" / "ViT-B-32-laion2b_s34b_b79k" / "open_clip_pytorch_model.bin"
-)
+REAL_WEIGHTS = Config().models_dir / EMBEDDER_REL
 
 
 def _assert_model_missing(exc: ModelMissingError, path: Path) -> None:

@@ -25,6 +25,7 @@ from typing import Any, Callable, Iterator, Protocol, Sequence, TypeVar
 import numpy as np
 
 from nab_sentry.errors import ModelMissingError
+from nab_sentry.model_files import EMBEDDER_ARCH, EMBEDDER_ID
 
 __all__ = [
     "PROMPT_TEMPLATES",
@@ -43,7 +44,7 @@ __all__ = [
 
 PROMPT_TEMPLATES: tuple[str, str] = ("{q}", "a CCTV photo of {q}")
 EMBED_DIM = 512
-MODEL_NAME = "ViT-B-32"
+MODEL_NAME = EMBEDDER_ARCH
 MIN_BATCH_SIZE = 1
 MAX_BATCH_SIZE = 64
 _NORM_EPS = 1e-12
@@ -142,7 +143,8 @@ def _keep_root_logging() -> Iterator[None]:
 
 
 class OpenClipEncoder:
-    """OpenCLIP ViT-B/32 (``laion2b_s34b_b79k``) loaded from a local checkpoint only."""
+    """OpenCLIP ViT-B/32 (``EMBEDDER_ID``: ``datacomp_xl_s13b_b90k`` since V2 Step 4) loaded from a
+    local checkpoint only. ``model_id`` names it for :mod:`nab_sentry.embed.compat`."""
 
     dim: int = EMBED_DIM
 
@@ -167,6 +169,7 @@ class OpenClipEncoder:
         model.eval()
         self._setup(model, preprocess, tokenizer, batch_size, torch)
         self.weights_path = path
+        self.model_id: str | None = EMBEDDER_ID
 
     @classmethod
     def from_components(
@@ -185,6 +188,7 @@ class OpenClipEncoder:
         self = cls.__new__(cls)
         self._setup(model, preprocess, tokenizer, _check_batch_size(batch_size), torch_module)
         self.weights_path = None
+        self.model_id = None  # injected parts: not a known embedder
         return self
 
     def _setup(self, model: Any, preprocess: Callable[[Any], Any],

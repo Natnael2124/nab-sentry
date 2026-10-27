@@ -29,8 +29,21 @@ MIN_PROB = 0.65
 class Group:
     name: str  # e.g. "top colour"
     classes: frozenset[str]  # object classes the group applies to
-    tags: tuple[str, ...]
+    tags: tuple[str, ...]  # one per prompt; a tag may repeat (its prompts' probabilities add up)
     prompts: tuple[str, ...]
+
+    @property
+    def unique_tags(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(self.tags))
+
+
+def merge_by_tag(p: np.ndarray, tags: Sequence[str]) -> np.ndarray:
+    """Per-prompt probabilities -> per-tag probabilities (summed), in first-appearance order."""
+    order = list(dict.fromkeys(tags))
+    out = np.zeros(len(order))
+    for prob, t in zip(p, tags):
+        out[order.index(t)] += float(prob)
+    return out
 
 
 def _colours(subject: str, noun: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -46,8 +59,10 @@ DEFAULT_GROUPS: tuple[Group, ...] = (
     Group("top colour", frozenset({"person"}), _TOP_TAGS, _TOP_PROMPTS),
     Group("colour", frozenset({"car", "truck", "bus"}), _CAR_COLOURS,
           tuple(f"a {c} vehicle" for c in _CAR_COLOURS)),
+    # SUV and van are one tag: at CCTV resolution ViT-B/32 confuses them in both directions (an
+    # SUV read as a van, a minivan as an SUV; Step 4 attribute check), so it says "SUV/van".
     Group("type", frozenset({"car", "truck", "bus"}),
-          ("sedan", "pickup", "SUV", "van", "police car", "bus"),
+          ("sedan", "pickup", "SUV/van", "SUV/van", "police car", "bus"),
           ("a sedan car", "a pickup truck", "an SUV", "a van", "a police car", "a bus")),
 )
 
@@ -106,8 +121,9 @@ class AttributeTagger:
             if det_class not in g.classes or not len(crop_vectors):
                 continue
             text = self._text[self._key(g)]
-            probs = [softmax_scores(np.asarray(v, np.float32), text) for v in crop_vectors]
-            tag, p = vote(probs, g.tags, min_share=self.min_share, min_prob=self.min_prob)
+            probs = [merge_by_tag(softmax_scores(np.asarray(v, np.float32), text), g.tags)
+                     for v in crop_vectors]
+            tag, p = vote(probs, g.unique_tags, min_share=self.min_share, min_prob=self.min_prob)
             if tag is not None:
                 out[g.name] = (tag, round(p, 3))
         return out
