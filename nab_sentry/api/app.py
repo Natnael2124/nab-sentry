@@ -42,6 +42,7 @@ from nab_sentry.api.media import (
     resolve_thumb,
 )
 from nab_sentry.embed.clip_encoder import EmptyQueryError
+from nab_sentry.embed.compat import EmbedderMismatch, check_embedder
 from nab_sentry.logging_setup import get_logger
 from nab_sentry.querylog import QueryLog, QueryRecord
 from nab_sentry.search.engine import (
@@ -325,7 +326,7 @@ def create_app(services: Services, *, web_dir: Path | None = None) -> FastAPI:
     @app.exception_handler(SearchUnavailable)
     async def _unavailable(_req: Request, exc: SearchUnavailable) -> JSONResponse:
         log.warning("search unavailable: %s", exc)
-        return _error(503, "search_unavailable", "Search is unavailable")
+        return _error(503, "search_unavailable", str(exc) or "Search is unavailable")  # says what to run
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(_req: Request, exc: StarletteHTTPException) -> Response:
@@ -669,6 +670,10 @@ def _serve(args: Any, encoder_factory: Any, detector_factory: Any, run: Any,
             log.error("model load failed: %s (%s: %s)", stage_path, type(exc).__name__, exc)
             return EXIT_MODEL_LOAD
         engine.encoder = encoder
+        try:
+            check_embedder(db, encoder)
+        except EmbedderMismatch as exc:  # serve anyway: searches answer with this message
+            log.error("%s", exc)
 
         services = Services(
             cfg=cfg,

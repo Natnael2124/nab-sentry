@@ -167,3 +167,35 @@ def test_cli_nothing_to_do_on_the_same_embedder(tmp_path: Path, capsys):
     db.close()
     assert cli.main(["--set", f"root={tmp_path}"], encoder=Named(EMBEDDER_ID)) == 0
     assert "nothing to do" in capsys.readouterr().out
+
+
+def test_engine_checks_the_embedder_after_a_placeholder_passed(tmp_path: Path):
+    """The API checks ID sets with a placeholder before the real encoder is loaded."""
+    cfg, db, pipe, _ = setup(tmp_path)
+    try:
+        db.set_embed_model("old/model", 512)
+        engine = SearchEngine(cfg, db, pipe.index, object())  # placeholder: no model_id
+        engine.check_ready()
+        engine.encoder = Named("new/model")
+        with pytest.raises(SearchUnavailable, match="reembed"):
+            engine.check_ready()
+    finally:
+        db.close()
+
+
+def test_api_search_answers_503_with_the_reembed_message(tmp_path: Path):
+    from fastapi.testclient import TestClient
+
+    from nab_sentry.api.app import Services, create_app
+    from nab_sentry.querylog import QueryLog
+
+    cfg, db, pipe, _ = setup(tmp_path)
+    try:
+        db.set_embed_model("old/model", 512)
+        enc = Named("new/model")
+        svc = Services(cfg, db, pipe.index, enc, False, SearchEngine(cfg, db, pipe.index, enc),
+                       QueryLog(cfg.query_log_path))
+        r = TestClient(create_app(svc)).get("/api/search", params={"q": "person"})
+        assert r.status_code == 503 and "reembed.py" in r.text
+    finally:
+        db.close()

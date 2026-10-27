@@ -103,6 +103,9 @@ class SearchEngine:
             label_boost=float(cfg.label_boost),
         )
         self._consistent = False  # ID sets compared once, on first successful check (design)
+        # Embedder checked separately: the API checks ID sets with a placeholder encoder before
+        # the real one is loaded, so this is cached only once a named encoder has passed.
+        self._embedder_ok = False
 
     # -- readiness -----------------------------------------------------------------------------
 
@@ -110,14 +113,16 @@ class SearchEngine:
         """Raise ``SearchUnavailable`` if the encoder is missing or the ID sets differ (8.15)."""
         if self.encoder is None:
             raise SearchUnavailable("search unavailable: text encoder is not loaded")
+        if not self._embedder_ok:
+            try:
+                check_embedder(self.db, self.encoder)
+            except EmbedderMismatch as exc:
+                raise SearchUnavailable(f"search unavailable: {exc}") from exc
+            self._embedder_ok = bool(getattr(self.encoder, "model_id", None))
         if self._consistent:
             return
         if self.index is None:
             raise SearchUnavailable("search unavailable: vector index is not loaded")
-        try:
-            check_embedder(self.db, self.encoder)
-        except EmbedderMismatch as exc:
-            raise SearchUnavailable(f"search unavailable: {exc}") from exc
         faiss_ids = np.unique(np.asarray(self.index.ids(), dtype=np.int64))
         db_ids = np.unique(np.asarray(self.db.vector_ids(), dtype=np.int64))
         if faiss_ids.shape != db_ids.shape or not np.array_equal(faiss_ids, db_ids):
