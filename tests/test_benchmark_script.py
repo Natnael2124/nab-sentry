@@ -182,7 +182,7 @@ def test_unloadable_models_report_stage_and_file_exit_1(tmp_path):
     )
     assert proc.returncode == 1, proc.stdout + proc.stderr
     # model stages fail naming the stage and the file
-    assert "stage=embedder_b8" in proc.stderr and "open_clip_pytorch_model.bin" in proc.stderr
+    assert "stage=embedder_b8" in proc.stderr and Path(EMBEDDER_REL).name in proc.stderr
     assert "stage=detector" in proc.stderr and det_rel in proc.stderr
     # completed stages are still reported
     for stage in ("decode", "motion_gate", "thumbnail"):
