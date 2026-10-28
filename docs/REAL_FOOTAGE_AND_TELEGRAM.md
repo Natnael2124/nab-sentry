@@ -25,6 +25,19 @@ The Telegram token and chat ID are environment variables, never stored in a file
 
 ---
 
+## Before you start: models up to date
+
+The embedder changed in Step 4 (see the README, "Embedder"). Run this once after pulling the update:
+
+```powershell
+venv\Scripts\python.exe scripts\fetch_models.py
+venv\Scripts\python.exe scripts\reembed.py
+```
+
+`fetch_models.py` downloads the new weights. `reembed.py` converts footage that is already stored, or says "nothing to do".
+
+If you skip this, search and ingest stop with a message that names `reembed.py`.
+
 ## Step 0: one camera in `config\cameras.yaml`
 
 ```powershell
