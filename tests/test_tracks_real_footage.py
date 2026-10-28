@@ -7,8 +7,9 @@ then checks against the Integrator's Ground_Truth_File:
   (thumbnails 1 s apart; the cut seen at "104.0" in the Compilation_Video really happens at
   about 104.1 s), so a track spans a cut at ``x`` only if it runs from before ``x - 1`` to
   after ``x + 1``;
-* the number of person tracks is at most twice the number of labelled person incidents (a
-  coarse fragmentation bound: one person split into many tracks fails it).
+* the number of person tracks is at most twice the number of labelled people (the sum of
+  ``count`` over person incidents; a coarse fragmentation bound: one person split into many
+  tracks fails it).
 
 Skipped until ``eval/ground_truth/CAM-SEC01.yaml`` exists (task 2.4) and the models and the
 video are present.
@@ -79,6 +80,6 @@ def test_no_track_spans_a_labelled_scene_cut(stored):
 
 def test_person_tracks_not_badly_fragmented(stored):
     tracks, gt = stored
-    incidents = [i for i in gt.incidents if "person" in i.classes and i.start < SECONDS]
+    labelled = sum(i.count for i in gt.incidents if "person" in i.classes and i.start < SECONDS)
     people = [t for t in tracks if t[0] == "person"]
-    assert len(people) <= 2 * max(1, len(incidents)), (len(people), len(incidents))
+    assert len(people) <= 2 * max(1, labelled), (len(people), labelled)

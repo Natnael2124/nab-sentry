@@ -9,6 +9,9 @@ cameras:
     source: rtsp://user:password@192.168.1.20:554/stream2
     segment_s: 10
     encoder: auto
+    # Motion ROI: only changes inside it make the gate pass. Cover where people's BODIES move,
+    # not just where they stand (a person whose body is mostly outside the ROI is only seen at
+    # the periodic keyframes and may never be tracked). Leave out swaying trees, roads, sky.
     roi: [0.0, 0.3, 1.0, 1.0]
     zones:
       yard: [[0.10, 0.55], [0.90, 0.55], [0.90, 1.00], [0.10, 1.00]]

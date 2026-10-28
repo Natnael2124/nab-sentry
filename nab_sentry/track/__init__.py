@@ -29,9 +29,11 @@ class TrackSink(Protocol):
         made during it are tagged ``(video_id, frame offset_s)``."""
         ...
 
-    def update(self, frame: DecodedFrame, detections: Sequence[Detection]) -> Sequence[int | None]:
-        """Consume one detector run, frames in increasing ``offset_s`` order; returns the track
-        key of each detection (``None``: no track), aligned with ``detections``."""
+    def update(self, frame: DecodedFrame, detections: Sequence[Detection]) -> Sequence[Any]:
+        """Consume one detector run, frames in increasing ``offset_s`` order; returns one
+        assignment per detection, aligned with ``detections``, with ``.detection``,
+        ``.track_key`` (``None``: no track) and ``.confirmed``
+        (:class:`nab_sentry.track.bytetrack.Assignment`)."""
         ...
 
     def end_video(self, end_t: float) -> list[Any]:

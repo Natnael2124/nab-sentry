@@ -23,13 +23,15 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
+from nab_sentry.model_files import EMBEDDER_ID
+
 if TYPE_CHECKING:  # avoid an import cycle once engine.py imports MetadataStore (task 11.8)
     from nab_sentry.search.engine import SearchFilter
 
 log = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "2"
-EMBED_MODEL = "ViT-B-32/laion2b_s34b_b79k"
+SCHEMA_VERSION = "4"
+EMBED_MODEL = EMBEDDER_ID  # written into a new store; checked by nab_sentry.embed.compat
 EMBED_DIM = "512"
 
 DDL = """
@@ -126,6 +128,66 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         "ALTER TABLE vectors ADD COLUMN track_id INTEGER REFERENCES tracks(track_id) ON DELETE SET NULL",
         "CREATE INDEX idx_vectors_track ON vectors(track_id)",
     ),
+    # v2 -> v3: the alert outbox (V2 Requirements 12.5, 14, 15), written by the Watcher inside
+    # the Segment's transaction and delivered by the Notifier.
+    2: (
+        """CREATE TABLE alerts (
+            alert_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind                  TEXT    NOT NULL
+                CHECK (kind IN ('rule', 'camera_offline', 'camera_recovered', 'disk_low')),
+            rule_id               TEXT,
+            rule_name             TEXT,
+            severity              TEXT    CHECK (severity IN ('immediate', 'verify')),
+            camera_id             TEXT    REFERENCES cameras(camera_id),
+            track_id              INTEGER REFERENCES tracks(track_id) ON DELETE SET NULL,
+            video_id              INTEGER REFERENCES videos(video_id) ON DELETE SET NULL,
+            trigger_offset_s      REAL,
+            trigger_epoch_ms      INTEGER NOT NULL,
+            det_class             TEXT,
+            n_tracks              INTEGER,
+            state                 TEXT    NOT NULL
+                CHECK (state IN ('pending', 'photo_sent', 'sent', 'failed', 'suppressed')),
+            attempts              INTEGER NOT NULL DEFAULT 0,
+            next_attempt_epoch_ms INTEGER NOT NULL DEFAULT 0,
+            snapshot_path         TEXT,
+            clip_path             TEXT,
+            note                  TEXT,
+            feedback              TEXT    CHECK (feedback IN ('real', 'false')),
+            created_at            TEXT    NOT NULL,
+            CHECK ((kind = 'rule') = (rule_id IS NOT NULL))
+        )""",
+        "CREATE INDEX idx_alerts_state ON alerts(state, next_attempt_epoch_ms)",
+        "CREATE INDEX idx_alerts_rule ON alerts(rule_id, camera_id, trigger_epoch_ms)",
+        """CREATE TABLE alert_messages (
+            alert_id   INTEGER NOT NULL REFERENCES alerts(alert_id) ON DELETE CASCADE,
+            chat_id    INTEGER NOT NULL,
+            step       TEXT    NOT NULL CHECK (step IN ('photo', 'clip', 'text')),
+            message_id INTEGER NOT NULL,
+            PRIMARY KEY (alert_id, chat_id, step)
+        )""",
+        "CREATE TABLE rule_mutes (rule_id TEXT PRIMARY KEY, until_epoch_ms INTEGER NOT NULL)",
+        "CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    ),
+    # v3 -> v4: the activity log (Step 3, Requirement 19): one row per confirmed track, kept up
+    # to date as the track grows; deleted with its track.
+    3: (
+        """CREATE TABLE activities (
+            activity_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id       INTEGER NOT NULL UNIQUE REFERENCES tracks(track_id) ON DELETE CASCADE,
+            camera_id      TEXT    NOT NULL REFERENCES cameras(camera_id),
+            det_class      TEXT    NOT NULL,
+            first_epoch_ms INTEGER NOT NULL,
+            last_epoch_ms  INTEGER NOT NULL CHECK (last_epoch_ms >= first_epoch_ms),
+            zones          TEXT    NOT NULL DEFAULT '{}',
+            crossings      TEXT    NOT NULL DEFAULT '[]',
+            tags           TEXT    NOT NULL DEFAULT '{}',
+            best_vector_id INTEGER REFERENCES vectors(vector_id) ON DELETE SET NULL,
+            summary        TEXT    NOT NULL,
+            vlm_text       TEXT,
+            updated_at     TEXT    NOT NULL
+        )""",
+        "CREATE INDEX idx_activities_camera_time ON activities(camera_id, first_epoch_ms)",
+    ),
 }
 
 
@@ -206,6 +268,24 @@ class NewTrackObs:
     conf: float
     high: bool
     box: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class NewAlert:
+    kind: str  # rule | camera_offline | camera_recovered | disk_low
+    trigger_epoch_ms: int
+    state: str = "pending"
+    rule_id: str | None = None
+    rule_name: str | None = None
+    severity: str | None = None
+    camera_id: str | None = None
+    track_id: int | None = None
+    video_id: int | None = None
+    trigger_offset_s: float | None = None
+    det_class: str | None = None
+    n_tracks: int | None = None
+    snapshot_path: str | None = None
+    note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -309,6 +389,19 @@ class MetadataStore:
                 [("schema_version", "1"), ("embed_model", EMBED_MODEL), ("dim", EMBED_DIM)],
             )
             self.migrate()
+
+    def embed_model(self) -> str | None:
+        """ID of the embedder whose vectors the store and index hold (``schema_meta``)."""
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM schema_meta WHERE key = 'embed_model'").fetchone()
+        return row[0] if row else None
+
+    def set_embed_model(self, model_id: str, dim: int) -> None:
+        with self._txn():
+            self._conn.executemany(
+                "INSERT INTO schema_meta(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [("embed_model", model_id), ("dim", str(int(dim)))])
 
     def schema_version(self) -> int:
         with self._lock:
@@ -507,6 +600,271 @@ class MetadataStore:
                 "DELETE FROM tracks WHERE NOT EXISTS "
                 "(SELECT 1 FROM track_obs o WHERE o.track_id = tracks.track_id)")
             return int(cur.rowcount)
+
+    # -- alerts (schema v3) -----------------------------------------------------------------------
+
+    def insert_alert(self, a: NewAlert) -> int:
+        with self._write():
+            cur = self._conn.execute(
+                "INSERT INTO alerts(kind, rule_id, rule_name, severity, camera_id, track_id, video_id, "
+                "trigger_offset_s, trigger_epoch_ms, det_class, n_tracks, state, snapshot_path, note, "
+                "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (a.kind, a.rule_id, a.rule_name, a.severity, a.camera_id, a.track_id, a.video_id,
+                 a.trigger_offset_s, int(a.trigger_epoch_ms), a.det_class, a.n_tracks, a.state,
+                 a.snapshot_path, a.note, _now_iso()),
+            )
+            return int(cur.lastrowid)
+
+    def last_rule_fires(self, camera_id: str) -> dict[str, int]:
+        """rule_id -> latest trigger_epoch_ms of its alerts on ``camera_id`` (cooldown seed)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT rule_id, MAX(trigger_epoch_ms) FROM alerts "
+                "WHERE kind = 'rule' AND camera_id = ? GROUP BY rule_id", (camera_id,)).fetchall()
+        return {r[0]: int(r[1]) for r in rows}
+
+    def active_mutes(self, now_epoch_ms: int) -> dict[str, int]:
+        """rule_id -> muted-until epoch ms, for mutes still running at ``now_epoch_ms``."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT rule_id, until_epoch_ms FROM rule_mutes WHERE until_epoch_ms > ?",
+                (int(now_epoch_ms),)).fetchall()
+        return {r[0]: int(r[1]) for r in rows}
+
+    def set_mute(self, rule_id: str, until_epoch_ms: int | None) -> None:
+        """Mute ``rule_id`` until the given time; ``None`` removes the mute."""
+        with self._write():
+            if until_epoch_ms is None:
+                self._conn.execute("DELETE FROM rule_mutes WHERE rule_id = ?", (rule_id,))
+            else:
+                self._conn.execute(
+                    "INSERT INTO rule_mutes(rule_id, until_epoch_ms) VALUES (?, ?) "
+                    "ON CONFLICT(rule_id) DO UPDATE SET until_epoch_ms = excluded.until_epoch_ms",
+                    (rule_id, int(until_epoch_ms)))
+
+    # -- outbox (read and updated by the Notifier) ------------------------------------------------
+
+    ALERT_COLUMNS = ("alert_id", "kind", "rule_id", "rule_name", "severity", "camera_id", "track_id",
+                     "video_id", "trigger_offset_s", "trigger_epoch_ms", "det_class", "n_tracks",
+                     "state", "attempts", "next_attempt_epoch_ms", "snapshot_path", "clip_path",
+                     "note", "feedback", "created_at")
+    _ALERT_UPDATABLE = frozenset({"state", "attempts", "next_attempt_epoch_ms", "clip_path", "note",
+                                  "feedback"})
+
+    def _alert_rows(self, sql: str, params: tuple) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [dict(zip(self.ALERT_COLUMNS, r)) for r in rows]
+
+    def due_alerts(self, now_epoch_ms: int, limit: int = 20) -> list[dict]:
+        """Alerts the Notifier should work on now (pending / photo_sent, retry time reached)."""
+        cols = ", ".join(self.ALERT_COLUMNS)
+        return self._alert_rows(
+            f"SELECT {cols} FROM alerts WHERE state IN ('pending', 'photo_sent') "
+            "AND next_attempt_epoch_ms <= ? ORDER BY alert_id LIMIT ?", (int(now_epoch_ms), int(limit)))
+
+    def get_alert(self, alert_id: int) -> dict | None:
+        cols = ", ".join(self.ALERT_COLUMNS)
+        rows = self._alert_rows(f"SELECT {cols} FROM alerts WHERE alert_id = ?", (int(alert_id),))
+        return rows[0] if rows else None
+
+    def alerts_between(self, from_epoch_ms: int, to_epoch_ms: int) -> list[dict]:
+        cols = ", ".join(self.ALERT_COLUMNS)
+        return self._alert_rows(
+            f"SELECT {cols} FROM alerts WHERE trigger_epoch_ms >= ? AND trigger_epoch_ms < ? "
+            "ORDER BY trigger_epoch_ms", (int(from_epoch_ms), int(to_epoch_ms)))
+
+    def update_alert(self, alert_id: int, **fields: object) -> None:
+        bad = set(fields) - self._ALERT_UPDATABLE
+        if bad:
+            raise ValueError(f"not updatable: {sorted(bad)}")
+        if not fields:
+            return
+        names = sorted(fields)  # column names come from the whitelist above, never from callers
+        sets = ", ".join(f"{n} = ?" for n in names)
+        with self._write():
+            cur = self._conn.execute(f"UPDATE alerts SET {sets} WHERE alert_id = ?",
+                                     (*(fields[n] for n in names), int(alert_id)))
+            if cur.rowcount != 1:
+                raise KeyError(f"no alerts row with alert_id={alert_id}")
+
+    def sent_steps(self, alert_id: int) -> dict[tuple[int, str], int]:
+        """(chat_id, step) -> Telegram message_id already accepted for this alert."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT chat_id, step, message_id FROM alert_messages WHERE alert_id = ?",
+                (int(alert_id),)).fetchall()
+        return {(int(r[0]), r[1]): int(r[2]) for r in rows}
+
+    def record_message(self, alert_id: int, chat_id: int, step: str, message_id: int) -> None:
+        with self._write():
+            self._conn.execute(
+                "INSERT OR REPLACE INTO alert_messages(alert_id, chat_id, step, message_id) "
+                "VALUES (?, ?, ?, ?)", (int(alert_id), int(chat_id), step, int(message_id)))
+
+    def alert_for_message(self, chat_id: int, message_id: int) -> int | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT alert_id FROM alert_messages WHERE chat_id = ? AND message_id = ?",
+                (int(chat_id), int(message_id))).fetchone()
+        return None if row is None else int(row[0])
+
+    def clip_segments(self, camera_id: str, from_epoch_ms: int, to_epoch_ms: int) -> list[tuple[str, int, float]]:
+        """(src_path, start_epoch_ms, duration_s) of complete videos of ``camera_id`` overlapping
+        the window, in time order."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT src_path, start_epoch_ms, duration_s FROM videos WHERE camera_id = ? "
+                "AND status = 'complete' AND start_epoch_ms < ? "
+                "AND start_epoch_ms + CAST(duration_s * 1000 AS INTEGER) > ? ORDER BY start_epoch_ms",
+                (camera_id, int(to_epoch_ms), int(from_epoch_ms))).fetchall()
+        return [(r[0], int(r[1]), float(r[2])) for r in rows]
+
+    def video_start_ms(self, video_id: int) -> int | None:
+        with self._lock:
+            row = self._conn.execute("SELECT start_epoch_ms FROM videos WHERE video_id = ?",
+                                     (int(video_id),)).fetchone()
+        return None if row is None else int(row[0])
+
+    def latest_video(self, camera_id: str) -> tuple[str, int, float] | None:
+        """(src_path, start_epoch_ms, duration_s) of the camera's newest complete video."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT src_path, start_epoch_ms, duration_s FROM videos WHERE camera_id = ? "
+                "AND status = 'complete' ORDER BY start_epoch_ms DESC LIMIT 1", (camera_id,)).fetchone()
+        return None if row is None else (row[0], int(row[1]), float(row[2]))
+
+    def videos_ended_before(self, cutoff_epoch_ms: int, camera_ids: Sequence[str]) -> list[tuple[int, str]]:
+        """(video_id, src_path) of videos of the given cameras that ended before the cutoff."""
+        cams = list(camera_ids)
+        if not cams:
+            return []
+        with self._lock:
+            self._conn.execute("CREATE TEMP TABLE IF NOT EXISTS cams(id TEXT PRIMARY KEY)")
+            self._conn.execute("DELETE FROM temp.cams")
+            try:
+                self._conn.executemany("INSERT OR IGNORE INTO temp.cams(id) VALUES (?)", [(c,) for c in cams])
+                rows = self._conn.execute(
+                    "SELECT video_id, src_path FROM videos JOIN temp.cams c ON c.id = videos.camera_id "
+                    "WHERE start_epoch_ms + CAST(duration_s * 1000 AS INTEGER) < ? ORDER BY video_id",
+                    (int(cutoff_epoch_ms),)).fetchall()
+            finally:
+                self._conn.execute("DELETE FROM temp.cams")
+        return [(int(r[0]), r[1]) for r in rows]
+
+    def expire_alert_media(self, cutoff_epoch_ms: int) -> list[str]:
+        """Forget snapshot/clip files of alerts older than the cutoff (rows are kept); returns the
+        file names to delete."""
+        with self._write():
+            rows = self._conn.execute(
+                "SELECT snapshot_path, clip_path FROM alerts WHERE trigger_epoch_ms < ? "
+                "AND (snapshot_path IS NOT NULL OR clip_path IS NOT NULL)", (int(cutoff_epoch_ms),)).fetchall()
+            self._conn.execute(
+                "UPDATE alerts SET snapshot_path = NULL, clip_path = NULL WHERE trigger_epoch_ms < ?",
+                (int(cutoff_epoch_ms),))
+        return [name for row in rows for name in row if name]
+
+    def kv_get(self, key: str) -> str | None:
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+        return None if row is None else row[0]
+
+    def kv_set(self, key: str, value: str) -> None:
+        with self._write():
+            self._conn.execute("INSERT INTO kv(key, value) VALUES (?, ?) "
+                               "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+
+    # -- activities (schema v4) ---------------------------------------------------------------
+
+    def track_points(self, track_id: int) -> list[tuple[int, int, int, int, int, int, int]]:
+        """(abs_epoch_ms, x1, y1, x2, y2, width, height) of every observation, in time order."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT o.abs_epoch_ms, o.x1, o.y1, o.x2, o.y2, v.width, v.height FROM track_obs o "
+                "JOIN videos v USING (video_id) WHERE o.track_id = ? ORDER BY o.abs_epoch_ms",
+                (int(track_id),)).fetchall()
+        return [tuple(int(x) for x in r) for r in rows]  # type: ignore[misc]
+
+    def track_frames(self, track_id: int) -> list[tuple[str, float, tuple[int, int, int, int]]]:
+        """(source video path, offset_s, box) of every observation of a track, in time order."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT v.src_path, o.offset_s, o.x1, o.y1, o.x2, o.y2 FROM track_obs o "
+                "JOIN videos v USING (video_id) WHERE o.track_id = ? ORDER BY o.abs_epoch_ms",
+                (int(track_id),)).fetchall()
+        return [(r[0], float(r[1]), (int(r[2]), int(r[3]), int(r[4]), int(r[5]))) for r in rows]
+
+    def track_crops(self, track_id: int) -> list[tuple[int, float, int, bool]]:
+        """(vector_id, det_conf, box area, isolated) of the crop vectors linked to a track;
+        ``isolated`` is False when another crop of the same frame overlaps it (a crop with two
+        people in it gives mixed attributes)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT v.vector_id, v.det_conf, (v.x2 - v.x1) * (v.y2 - v.y1), NOT EXISTS ("
+                "  SELECT 1 FROM vectors o WHERE o.frame_id = v.frame_id AND o.kind = 'crop' "
+                "  AND o.vector_id != v.vector_id AND o.x1 < v.x2 AND v.x1 < o.x2 "
+                "  AND o.y1 < v.y2 AND v.y1 < o.y2) "
+                "FROM vectors v WHERE v.track_id = ? AND v.kind = 'crop' ORDER BY v.vector_id",
+                (int(track_id),)).fetchall()
+        return [(int(r[0]), float(r[1]), int(r[2]), bool(r[3])) for r in rows]
+
+    def upsert_activity(self, track_id: int, camera_id: str, det_class: str, first_epoch_ms: int,
+                        last_epoch_ms: int, zones: str, crossings: str, tags: str,
+                        best_vector_id: int | None, summary: str) -> int:
+        with self._write():
+            self._conn.execute(
+                "INSERT INTO activities(track_id, camera_id, det_class, first_epoch_ms, last_epoch_ms, "
+                "zones, crossings, tags, best_vector_id, summary, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(track_id) DO UPDATE SET "
+                "first_epoch_ms = excluded.first_epoch_ms, last_epoch_ms = excluded.last_epoch_ms, "
+                "zones = excluded.zones, crossings = excluded.crossings, tags = excluded.tags, "
+                "best_vector_id = excluded.best_vector_id, summary = excluded.summary, "
+                "updated_at = excluded.updated_at",
+                (int(track_id), camera_id, det_class, int(first_epoch_ms), int(last_epoch_ms), zones,
+                 crossings, tags, best_vector_id, summary, _now_iso()))
+            (aid,) = self._conn.execute("SELECT activity_id FROM activities WHERE track_id = ?",
+                                        (int(track_id),)).fetchone()
+        return int(aid)
+
+    ACTIVITY_COLUMNS = ("activity_id", "track_id", "camera_id", "det_class", "first_epoch_ms",
+                        "last_epoch_ms", "zones", "crossings", "tags", "best_vector_id", "summary",
+                        "vlm_text", "thumb_path", "video_id", "offset_s", "x1", "y1", "x2", "y2")
+
+    def activities_between(self, from_epoch_ms: int, to_epoch_ms: int,
+                           camera_id: str | None = None) -> list[dict]:
+        """Activities that started in the window (with their best crop's frame), time order."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT a.activity_id, a.track_id, a.camera_id, a.det_class, a.first_epoch_ms, "
+                "a.last_epoch_ms, a.zones, a.crossings, a.tags, a.best_vector_id, a.summary, a.vlm_text, "
+                "f.thumb_path, f.video_id, f.offset_s, v.x1, v.y1, v.x2, v.y2 FROM activities a "
+                "LEFT JOIN vectors v ON v.vector_id = a.best_vector_id "
+                "LEFT JOIN frames f ON f.frame_id = v.frame_id "
+                "WHERE a.first_epoch_ms >= ? AND a.first_epoch_ms < ? AND (? IS NULL OR a.camera_id = ?) "
+                "ORDER BY a.first_epoch_ms",
+                (int(from_epoch_ms), int(to_epoch_ms), camera_id, camera_id)).fetchall()
+        return [dict(zip(self.ACTIVITY_COLUMNS, r)) for r in rows]
+
+    def get_activity(self, activity_id: int) -> dict | None:
+        with self._lock:
+            row = self._conn.execute("SELECT first_epoch_ms FROM activities WHERE activity_id = ?",
+                                     (int(activity_id),)).fetchone()
+        if row is None:
+            return None
+        rows = [a for a in self.activities_between(row[0], row[0] + 1) if a["activity_id"] == int(activity_id)]
+        return rows[0] if rows else None
+
+    def set_activity_vlm(self, activity_id: int, text: str) -> None:
+        with self._write():
+            self._conn.execute("UPDATE activities SET vlm_text = ? WHERE activity_id = ?",
+                               (text, int(activity_id)))
+
+    def referenced_alert_files(self) -> set[str]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT snapshot_path FROM alerts WHERE snapshot_path IS NOT NULL "
+                "UNION SELECT clip_path FROM alerts WHERE clip_path IS NOT NULL").fetchall()
+        return {r[0] for r in rows}
 
     def finalize_video(
         self, video_id: int, *, sampled: int, passed: int, duration_s: float, playback_path: str

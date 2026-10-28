@@ -42,6 +42,7 @@ from nab_sentry.api.media import (
     resolve_thumb,
 )
 from nab_sentry.embed.clip_encoder import EmptyQueryError
+from nab_sentry.embed.compat import EmbedderMismatch, check_embedder
 from nab_sentry.logging_setup import get_logger
 from nab_sentry.querylog import QueryLog, QueryRecord
 from nab_sentry.search.engine import (
@@ -325,7 +326,7 @@ def create_app(services: Services, *, web_dir: Path | None = None) -> FastAPI:
     @app.exception_handler(SearchUnavailable)
     async def _unavailable(_req: Request, exc: SearchUnavailable) -> JSONResponse:
         log.warning("search unavailable: %s", exc)
-        return _error(503, "search_unavailable", "Search is unavailable")
+        return _error(503, "search_unavailable", str(exc) or "Search is unavailable")  # says what to run
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_error(_req: Request, exc: StarletteHTTPException) -> Response:
@@ -405,6 +406,47 @@ def create_app(services: Services, *, web_dir: Path | None = None) -> FastAPI:
                 latency_ms=(time.perf_counter() - t0) * 1000.0,
             )
         )
+        return JSONResponse(out)
+
+    @app.get("/api/activities")
+    def activities(request: Request) -> Response:
+        """Activity log of one local day (Step 3, Requirement 20.4), shaped like search results
+        (so the Console reuses its list and player) plus ``activity_id`` and ``summary``. Each
+        item plays its best crop's video from 3 s before that moment."""
+        params = request.query_params
+        day_raw, cam = params.get("date"), params.get("camera") or None
+        if day_raw is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day_raw):
+            return _error(422, "invalid_parameter", "date must be YYYY-MM-DD", "date")
+        if cam is not None and not re.fullmatch(r"[A-Za-z0-9-]{1,64}", cam):
+            return _error(422, "invalid_parameter", "invalid camera id", "camera")
+        try:
+            day = datetime.strptime(day_raw, "%Y-%m-%d") if day_raw else datetime.now()
+        except ValueError:
+            return _error(422, "invalid_parameter", "date must be a real date", "date")
+        start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        labels = dict(services.db.cameras())
+        out: list[dict[str, Any]] = []
+        for a in services.db.activities_between(round(start.timestamp() * 1000),
+                                                round(end.timestamp() * 1000), cam):
+            if a["video_id"] is None or a["thumb_path"] is None:
+                continue  # no stored crop to show
+            vstart = services.db.video_start_ms(a["video_id"])
+            if vstart is None:
+                continue
+            off = max(0.0, float(a["offset_s"]) - 3.0)
+            dur = max(4.0, (a["last_epoch_ms"] - a["first_epoch_ms"]) / 1000)
+            t0 = datetime.fromtimestamp(vstart / 1000 + off).astimezone()
+            out.append({
+                "activity_id": a["activity_id"], "summary": a["summary"], "det_class": a["det_class"],
+                "camera_id": a["camera_id"], "camera_label": labels.get(a["camera_id"], a["camera_id"]),
+                "video_id": int(a["video_id"]), "start_offset_s": off, "end_offset_s": off + dur,
+                "start_time": t0.isoformat(timespec="milliseconds"),
+                "end_time": (t0 + timedelta(seconds=dur)).isoformat(timespec="milliseconds"),
+                "score": None, "relative_score": None, "hit_count": 0,
+                "thumbnail_url": f"/media/thumbs/{quote(a['thumb_path'], safe='')}",
+                "video_url": f"/media/video/{int(a['video_id'])}",
+            })
         return JSONResponse(out)
 
     # -- media --------------------------------------------------------------------------------
@@ -628,6 +670,10 @@ def _serve(args: Any, encoder_factory: Any, detector_factory: Any, run: Any,
             log.error("model load failed: %s (%s: %s)", stage_path, type(exc).__name__, exc)
             return EXIT_MODEL_LOAD
         engine.encoder = encoder
+        try:
+            check_embedder(db, encoder)
+        except EmbedderMismatch as exc:  # serve anyway: searches answer with this message
+            log.error("%s", exc)
 
         services = Services(
             cfg=cfg,

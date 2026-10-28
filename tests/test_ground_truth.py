@@ -89,3 +89,13 @@ def test_load_from_file(tmp_path: Path):
     f.write_text("video: [unclosed", encoding="utf-8")
     with pytest.raises(GroundTruthError, match="unparseable"):
         load_ground_truth(f)
+
+
+def test_count_field():
+    gt = parse_ground_truth({"video": "v.mp4", "incidents": [
+        {"start": 0, "end": 1, "classes": ["person"], "count": 3},
+        {"start": 2, "end": 3, "classes": ["car"]}]})
+    assert [i.count for i in gt.incidents] == [3, 1]
+    with pytest.raises(GroundTruthError) as exc:
+        parse_ground_truth({"video": "v.mp4", "incidents": [{"start": 0, "end": 1, "classes": ["car"], "count": 0}]})
+    assert exc.value.issues == ["incidents[0].count: must be an integer >= 1"]

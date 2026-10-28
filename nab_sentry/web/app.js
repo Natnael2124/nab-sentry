@@ -135,6 +135,7 @@ function init() {
     end: $("end"),
     cls: $("cls"),
     searchBtn: $("search-btn"),
+    todayBtn: $("today-btn"),
     status: $("status"),
     results: $("results"),
     video: $("video"),
@@ -285,8 +286,9 @@ function init() {
     time.textContent = `${start} – ${end}`;
 
     const score = document.createElement("span");
-    score.className = "card-score";
-    score.textContent = `Score ${formatScore(ev.score)}`;
+    // Activity log items (Step 3) carry a one-line summary instead of a search score.
+    score.className = ev.summary ? "card-summary" : "card-score";
+    score.textContent = ev.summary ? String(ev.summary) : `Score ${formatScore(ev.score)}`;
 
     btn.append(img, cam, time, score);
     btn.addEventListener("click", () => activate(index));
@@ -361,6 +363,35 @@ function init() {
     e.preventDefault();
     runSearch();
   });
+
+  // ---- today's activity log (Step 3) ----
+  async function loadToday() {
+    if (state.searching) return;
+    state.searching = true;
+    el.todayBtn.disabled = true;
+    el.status.textContent = MSG_LOADING;
+    try {
+      const cam = el.camera.value ? `?camera=${encodeURIComponent(el.camera.value)}` : "";
+      const resp = await fetchWithTimeout(`/api/activities${cam}`);
+      if (!resp.ok) {
+        el.status.textContent = (await readApiError(resp)) ?? MSG_UNREACHABLE;
+        return;
+      }
+      const items = await resp.json().catch(() => null);
+      if (!Array.isArray(items)) {
+        el.status.textContent = MSG_UNREACHABLE;
+        return;
+      }
+      renderResults(items);
+      el.status.textContent = items.length === 0 ? "Nothing recorded today yet" : `${items.length} activities today`;
+    } catch (err) {
+      el.status.textContent = requestErrorMessage(err);
+    } finally {
+      state.searching = false;
+      el.todayBtn.disabled = false;
+    }
+  }
+  if (el.todayBtn) el.todayBtn.addEventListener("click", loadToday);
 
   updateNav();
   loadCameras();

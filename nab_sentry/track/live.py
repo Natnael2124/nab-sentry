@@ -28,7 +28,7 @@ from nab_sentry.ingest.detector import Detection
 from nab_sentry.ingest.motion import changed_fraction, downscale_gray
 from nab_sentry.ingest.sources import DecodedFrame
 from nab_sentry.logging_setup import get_logger
-from nab_sentry.track.bytetrack import ByteTracker, TrackRecord
+from nab_sentry.track.bytetrack import Assignment, ByteTracker, TrackRecord
 
 log = get_logger("track")
 
@@ -98,7 +98,7 @@ class LiveTracks:
         self._cur, self._cam_id, self._start_t = st, camera_id, float(start_t)
         self._video_id = video_id
 
-    def update(self, frame: DecodedFrame, detections: Sequence[Detection]) -> list[int | None]:
+    def update(self, frame: DecodedFrame, detections: Sequence[Detection]) -> list[Assignment]:
         st = self._require()
         t = self._start_t + float(frame.offset_s)
         if st.last_t is not None and t < st.last_t:
@@ -113,7 +113,7 @@ class LiveTracks:
             st.sig = sig
         res = st.tracker.step(t, detections, tag=(self._video_id, float(frame.offset_s)))
         st.last_t = t
-        return [a.track_key for a in res]
+        return res
 
     def end_video(self, end_t: float) -> list[TrackRecord]:
         st = self._require()

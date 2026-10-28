@@ -59,7 +59,7 @@ EXIT_INDEX = 5
 EXIT_MODEL_LOAD = 6
 EXIT_INTERRUPTED = 130
 
-EMBEDDER_REL = "open_clip/ViT-B-32-laion2b_s34b_b79k/open_clip_pytorch_model.bin"
+from nab_sentry.model_files import EMBEDDER_REL  # noqa: E402  (the one embedder, V2 Step 4)
 
 # (cfg, manifest files rel->abs) -> Encoder
 EncoderFactory = Callable[[Config, dict[str, Path]], Any]

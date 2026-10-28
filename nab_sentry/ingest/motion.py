@@ -1,5 +1,9 @@
 """Motion gate: skip static sampled frames before the expensive models run.
 
+V2 Requirement 3.1: an optional ROI ``(x1, y1, x2, y2)`` in normalized coordinates restricts
+the changed-pixel fraction to that rectangle of the downscaled frame (swaying trees or a busy
+street outside it no longer pass frames). Without an ROI the gate is exactly the V1 gate.
+
 Requirements 3.1, 3.2, 3.3, 3.4, 3.5, 3.7, 3.9 (design key decision 4: frame
 differencing is the default; MOG2 is optional for real footage with lighting drift).
 
@@ -95,7 +99,8 @@ def changed_fraction(prev: np.ndarray, cur: np.ndarray, pixel_delta: int) -> flo
 
 class MotionGate:
     def __init__(self, threshold: float, keyframe_interval_s: float, gate_width: int,
-                 pixel_delta: int, method: Method = "diff") -> None:
+                 pixel_delta: int, method: Method = "diff",
+                 roi: tuple[float, float, float, float] | None = None) -> None:
         if method not in ("diff", "mog2"):
             raise ValueError(f"motion method must be 'diff' or 'mog2', got {method!r}")
         self.threshold = float(threshold)
@@ -103,6 +108,7 @@ class MotionGate:
         self.gate_width = int(gate_width)
         self.pixel_delta = int(pixel_delta)
         self.method: Method = method
+        self.roi = roi
         self._prev: Optional[np.ndarray] = None
         self._last_passed_offset: Optional[float] = None
         self._mog2: Any = None
@@ -118,13 +124,23 @@ class MotionGate:
     def _new_mog2() -> Any:
         return cv2.createBackgroundSubtractorMOG2(detectShadows=False)
 
+    def _region(self, img: np.ndarray) -> np.ndarray:
+        """The ROI part of a downscaled frame (the whole frame without an ROI)."""
+        if self.roi is None:
+            return img
+        h, w = img.shape[:2]
+        x1, y1, x2, y2 = self.roi
+        c1, r1 = min(int(x1 * w), w - 1), min(int(y1 * h), h - 1)
+        c2, r2 = max(c1 + 1, int(round(x2 * w))), max(r1 + 1, int(round(y2 * h)))
+        return img[r1:r2, c1:c2]
+
     def _mog2_fraction(self, small: np.ndarray, shape_changed: bool) -> float:
         if shape_changed:
             self._mog2 = self._new_mog2()
             self._mog2.apply(small)
             return 1.0
-        mask = self._mog2.apply(small)
-        return float(np.mean(mask > 0))
+        mask = self._mog2.apply(small)  # the model learns the whole frame; only the ROI counts
+        return float(np.mean(self._region(mask) > 0))
 
     def evaluate(self, frame: DecodedFrame) -> GateDecision:
         image = frame.image
@@ -148,7 +164,8 @@ class MotionGate:
         if self.method == "mog2":
             fraction = self._mog2_fraction(small, shape_changed)
         else:
-            fraction = changed_fraction(self._prev, small, self.pixel_delta)
+            fraction = (1.0 if shape_changed else
+                        changed_fraction(self._region(self._prev), self._region(small), self.pixel_delta))
         fraction = min(1.0, max(0.0, fraction))
         self._prev = small  # reference updated on every valid frame
 

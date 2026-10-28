@@ -7,7 +7,8 @@ Usage::
 Steps (Requirements 13.1, 13.2, 13.8):
 
 1. Delete any existing ``models/manifest.json`` (and a stale ``manifest.json.tmp``).
-2. Download ``open_clip_pytorch_model.bin`` (OpenCLIP ViT-B/32 ``laion2b_s34b_b79k``) with
+2. Download ``open_clip_model.safetensors`` (OpenCLIP ViT-B/32 ``datacomp_xl_s13b_b90k``, see
+   ``nab_sentry.model_files``) with
    ``huggingface_hub.hf_hub_download`` and ``yolo11n.pt`` via Ultralytics, each with up to
    3 attempts and exponential backoff.
 3. Export YOLO11n once per input shape in ``DETECTOR_SHAPES`` (``dynamic=False, nms=False``):
@@ -45,14 +46,21 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from nab_sentry.model_files import DETECTOR_SHAPES, detector_rel  # noqa: E402  (stdlib-only)
+from nab_sentry.model_files import (  # noqa: E402  (stdlib-only)
+    DETECTOR_SHAPES,
+    EMBEDDER_ARCH,
+    EMBEDDER_FILE,
+    EMBEDDER_REL,
+    EMBEDDER_REPO,
+    detector_rel,
+)
 from nab_sentry.startup import MANIFEST_NAME, sha256_file  # noqa: E402  (stdlib-only module)
 
 DEFAULT_MODELS_DIR = _ROOT / "models"
 
-CLIP_REPO_ID = "laion/CLIP-ViT-B-32-laion2B-s34B-b79K"
-CLIP_FILENAME = "open_clip_pytorch_model.bin"
-CLIP_REL = f"open_clip/ViT-B-32-laion2b_s34b_b79k/{CLIP_FILENAME}"
+CLIP_REPO_ID = EMBEDDER_REPO
+CLIP_FILENAME = EMBEDDER_FILE
+CLIP_REL = EMBEDDER_REL
 YOLO_PT_REL = "yolo11n.pt"
 YOLO_ONNX_REL = "yolo11n.onnx"  # the 640 x 640 export
 YOLO_ONNX_RELS = tuple(detector_rel(h, w) for h, w in DETECTOR_SHAPES)
@@ -175,8 +183,8 @@ def default_smoke_loader(role: str, path: Path) -> None:
         import open_clip
         import torch
 
-        model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", pretrained=str(path))
-        tokenizer = open_clip.get_tokenizer("ViT-B-32")
+        model, _, preprocess = open_clip.create_model_and_transforms(EMBEDDER_ARCH, pretrained=str(path))
+        tokenizer = open_clip.get_tokenizer(EMBEDDER_ARCH)
         model.eval()
         with torch.no_grad():
             vec = model.encode_text(tokenizer(["a red car"]))

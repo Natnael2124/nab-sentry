@@ -16,12 +16,13 @@ import cv2
 import numpy as np
 import pytest
 
+from nab_sentry.model_files import EMBEDDER_REL
 from nab_sentry.config import Config
 from nab_sentry.synthetic import SyntheticSpec, write_synthetic
 
 pytestmark = pytest.mark.slow
 
-CLIP_WEIGHTS_REL = Path("open_clip/ViT-B-32-laion2b_s34b_b79k/open_clip_pytorch_model.bin")
+CLIP_WEIGHTS_REL = Path(EMBEDDER_REL)
 MIN_OVERLAP_S = 1.0
 
 

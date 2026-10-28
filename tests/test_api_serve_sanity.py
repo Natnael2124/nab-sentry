@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from nab_sentry.model_files import EMBEDDER_FILE
 from nab_sentry.api.app import serve
 from nab_sentry.startup import SECURITY_WARNING
 from nab_sentry.store.db import MetadataStore
@@ -131,4 +132,4 @@ def test_model_load_failure_exits_6(ws: Path, caplog: pytest.LogCaptureFixture) 
 
     with caplog.at_level(logging.ERROR, logger="nab_sentry"):
         assert _serve(ws, encoder_factory=boom) == 6
-    assert any("open_clip_pytorch_model.bin" in r.getMessage() for r in caplog.records)
+    assert any(EMBEDDER_FILE in r.getMessage() for r in caplog.records)

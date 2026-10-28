@@ -247,3 +247,48 @@ def test_tracking_adds_detector_runs_but_not_rows(ws: Path, tmp_path: Path, caps
     assert with_tracking == without
     assert calls_on > calls_off
     assert all(r[2] != "car" for r in with_tracking)  # the low detection never becomes a crop
+
+
+def _write_rule_config(ws: Path, rules_yaml: str) -> tuple[Path, Path]:
+    cams = ws / "cameras.yaml"
+    cams.write_text("cameras:\n  - {camera_id: CAM-A, label: Gate, source: 'dshow:x',\n"
+                    "     zones: {all: [[0, 0], [1, 0], [1, 1], [0, 1]]}}\n", encoding="utf-8")
+    rules = ws / "rules.yaml"
+    rules.write_text(rules_yaml, encoding="utf-8")
+    return cams, rules
+
+
+def test_bad_rules_file_exits_2_before_models(ws: Path, capsys) -> None:
+    _add_video(ws, "CAM-A_20250101T080000.mp4", 1)
+    cams, rules = _write_rule_config(
+        ws, "rules:\n  - {id: r, camera: CAM-A, zone: nowhere, classes: [person], trigger: {type: enter}}\n")
+    loaded: list[str] = []
+    rc = _run(ws, "--cameras", str(cams), "--rules", str(rules),
+              encoder_factory=lambda cfg, files: loaded.append("enc"))
+    assert rc == 2 and loaded == []
+    assert "rules[0].zone: unknown zone 'nowhere'" in capsys.readouterr().err
+
+
+def test_rules_file_produces_alerts(ws: Path) -> None:
+    _add_video(ws, "CAM-A_20250101T080000.mp4", 1)
+    cams, rules = _write_rule_config(
+        ws, "rules:\n  - {id: anyone, camera: CAM-A, zone: all, classes: [person], trigger: {type: enter}}\n")
+    det = FakeDetector(lambda frame, i: [Detection("person", 0.9, (2, 3, 30, 40))])
+    assert _run(ws, "--set", "enable_detector=true", "--cameras", str(cams), "--rules", str(rules),
+                detector_factory=lambda cfg, files: det) == 0
+    con = sqlite3.connect(ws / "data" / "nab_sentry.db")
+    try:
+        rows = con.execute("SELECT rule_id, state, det_class FROM alerts").fetchall()
+    finally:
+        con.close()
+    assert rows == [("anyone", "pending", "person")]
+    assert len(list((ws / "data" / "alerts").glob("a_v*_anyone_*.jpg"))) == 1
+
+
+def test_example_config_files_load_together() -> None:
+    from nab_sentry.live.camera_config import load_cameras
+    from nab_sentry.rules.config import load_rules
+
+    root = Path(__file__).resolve().parents[1] / "config"
+    rules = load_rules(root / "rules.example.yaml", load_cameras(root / "cameras.example.yaml"))
+    assert [r.id for r in rules] == ["yard-night", "car-waiting", "gate-in"]

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from nab_sentry.embed.compat import EmbedderMismatch, check_embedder
 from nab_sentry.ingest.detector import TARGET_CLASSES
 from nab_sentry.search.clustering import ClusterHit, ClusterParams, Event, VideoInfo, cluster_hits
 from nab_sentry.store.db import MetadataStore, as_aware
@@ -102,6 +103,9 @@ class SearchEngine:
             label_boost=float(cfg.label_boost),
         )
         self._consistent = False  # ID sets compared once, on first successful check (design)
+        # Embedder checked separately: the API checks ID sets with a placeholder encoder before
+        # the real one is loaded, so this is cached only once a named encoder has passed.
+        self._embedder_ok = False
 
     # -- readiness -----------------------------------------------------------------------------
 
@@ -109,6 +113,12 @@ class SearchEngine:
         """Raise ``SearchUnavailable`` if the encoder is missing or the ID sets differ (8.15)."""
         if self.encoder is None:
             raise SearchUnavailable("search unavailable: text encoder is not loaded")
+        if not self._embedder_ok:
+            try:
+                check_embedder(self.db, self.encoder)
+            except EmbedderMismatch as exc:
+                raise SearchUnavailable(f"search unavailable: {exc}") from exc
+            self._embedder_ok = bool(getattr(self.encoder, "model_id", None))
         if self._consistent:
             return
         if self.index is None:

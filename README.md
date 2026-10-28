@@ -27,7 +27,7 @@ data/
   vectors.faiss      Vector_Index
 models/
   manifest.json      SHA-256 of every model file
-  open_clip/ViT-B-32-laion2b_s34b_b79k/open_clip_pytorch_model.bin
+  open_clip/ViT-B-32-datacomp_xl_s13b_b90k/open_clip_model.safetensors   image/text embedder
   yolo11n.pt         source weights for the ONNX exports
   yolo11n.onnx       detector, 640 x 640 input
   yolo11n_384x640.onnx  detector, 384 x 640 input (default, suits 16:9 cameras)
@@ -41,7 +41,7 @@ Run once on a machine with internet access:
 venv\Scripts\python.exe scripts\fetch_models.py
 ```
 
-This downloads the OpenCLIP ViT-B/32 (`laion2b_s34b_b79k`) weights and `yolo11n.pt` (3 attempts each), exports the detector once per input shape (`models\yolo11n.onnx` for 640 x 640 and `models\yolo11n_384x640.onnx` for 384 x 640), smoke-loads every file, and writes `models\manifest.json` last. Any failure exits 1, names the failing file, and leaves no manifest. Use `--models-dir <path>` to write elsewhere.
+This downloads the OpenCLIP ViT-B/32 (`datacomp_xl_s13b_b90k`) weights and `yolo11n.pt` (3 attempts each), exports the detector once per input shape (`models\yolo11n.onnx` for 640 x 640 and `models\yolo11n_384x640.onnx` for 384 x 640), smoke-loads every file, and writes `models\manifest.json` last. Any failure exits 1, names the failing file, and leaves no manifest. Use `--models-dir <path>` to write elsewhere.
 
 `--export-only` skips the downloads and re-exports the detector from the `yolo11n.pt` and OpenCLIP weights already in `models\`. Use it offline after an update adds a new input shape:
 
@@ -187,9 +187,146 @@ Synthetic: `CAM-SYN01_20250101T080000.mp4`, 200,000-vector FAISS index.
 
 Qwen3-VL 2B describes scenes correctly ("man in a red striped shirt and black shorts mowing the lawn, white car and white SUV parked behind him") but occasionally invents details ("lifts the mower to the sky"). Encoding one image takes 35-48 s on this CPU; Ollama encodes every image into about 1,100 tokens whatever the input size, so downscaling does not help. Use: `/ask` about one clip, rules with `severity: verify`, overnight summaries. Never per event. The plain `qwen3-vl:2b` tag is the thinking variant and ignores `think: false`.
 
+Idle and under ingest load (task 4.2; 2 scenes x 2 repeats, `num_ctx` 4096, AC power, 2026-10-28). "Under load" means the 30-minute scene was being ingested at the same time:
+
+| Input | Idle, wall median | Under load | Image reading (prompt eval) | Generation |
+|---|---|---|---|---|
+| Single frame (JSON answer) | 56 s | 67 s (+18%) | 44 s / 51 s, ~1,080 tokens | 13.8 / 10.2 tok/s |
+| 2x2 person-crop storyboard | 82 s | 108 s (+31%) | 44 s / 54 s | 13.0 / 9.6 tok/s (hits the 512-token cap) |
+
+- **Ingest under the VLM's load** still ran at 6.4x real time (7.3x alone), with all 16 scene alerts.
+- **Ollama's memory** peaks at about 4.2 GB.
+- **A typical answer** for the traffic-stop scene is correct on the police SUV, the officer, the on-screen timestamp and the caption, but adds "numerous bullet holes" that are probably not there. It verifies and describes on request; it never raises alerts on its own.
+
 ### Zero-shot attribute tags (no VLM)
 
 `scripts/attr_spike.py` tags crops from their existing OpenCLIP embeddings (about 2 ms per crop). On 24 person and 12 vehicle crops of the compilation video, checked by eye: vehicle colour and type about 80% correct, person top colour about 60% (right on clean single-person crops), clothing type / carried objects / headwear unreliable. About a quarter of the sampled person crops were detector false positives (title-card text, a cat, a fence).
+
+### Motion gate recall (Compilation_Video)
+
+`scripts/gate_sweep.py VIDEO_DIR` replays the gate at 1 fps and checks every labelled incident has at least one passed frame. On the compilation (387 sampled seconds, 25 incidents, no ROI):
+
+| Method | Threshold | Pass fraction | Missed incidents |
+|---|---|---|---|
+| diff | 0.005 | 0.873 | 0 |
+| diff | 0.01 | 0.801 | 0 |
+| diff | 0.02 (default) | 0.695 | 0 |
+| diff | 0.05 | 0.475 | 0 |
+| mog2 | 0.005-0.05 | 0.966-0.992 | 0 |
+
+Every setting catches every incident, so the compilation cannot tell thresholds apart on recall. MOG2 passes almost everything at 1 fps (its background model cannot settle at that rate) and is not useful here.
+
+Efficiency, on the 30-minute generated scene (9 objects, mostly idle; ROI `0,0.35,1,1` = the lower 65% of the frame):
+
+| Method | Threshold | ROI | Pass fraction | Missed objects | Idle pass fraction |
+|---|---|---|---|---|---|
+| diff | 0.01 | none / ROI | 0.149 / 0.148 | 0 | 0.098 |
+| diff | 0.02 | none / ROI | 0.139 / 0.142 | 0 | 0.098 |
+| diff | 0.05 | none / ROI | 0.106 / 0.110 | 0 | 0.098 |
+| mog2 | 0.01 | none / ROI | 0.172 / 0.145 | 0 | 0.128 / 0.098 |
+| mog2 | 0.02-0.05 | none / ROI | 0.106-0.128 | 0 | 0.098 |
+
+0.098 is the floor: a Segment keyframe every 10 s always passes. Every diff setting reaches it, so idle cost comes from keyframes, not from noise, drift or the "lights on" step. Higher thresholds only shorten how long a busy object keeps the gate open. diff 0.02 stays the default, and diff 0.05 is a safe saving on a quiet site. The generated noise is milder than a real night-time sensor, so check this again on real footage.
+
+## V2 acceptance (generated scene)
+
+No continuous footage of a real camera exists yet, so `scripts/make_scene.py` generates 30 minutes of one fixed backyard view: a frame of the compilation as background, person and car cut-outs (GrabCut) from the same video moving along scripted paths, and in between an idle scene that is not static (sensor noise, slow brightness drift, a swaying tree outside the ROI, one sudden "lights on" step). Ground truth comes from the script, and the expected alerts come from running the real RuleEngine on the exact scripted positions. Six rules: enter, cross in, cross out, dwell 25 s, count >= 2 and a scheduled enter. `scripts/acceptance.py` then runs the real detector, embedder, tracker, rules and Notifier (with a recording Telegram transport).
+
+Batch run, 180 Segments of 10 s, **on battery** (CPU at about 1.2-1.5 GHz):
+
+| Measure | Result |
+|---|---|
+| Alerts | 16 expected, 16 raised, 0 extra: **precision 1.0, recall 1.0** |
+| Alert time error vs the scripted event | 0-1.4 s |
+| Tracks | 9 confirmed, 0 unmatched: each of the 6 single objects inside the ROI got exactly one track |
+| Two people walking together | 3 tracks for the pair (one identity switch while they overlap) |
+| Person walking outside the ROI | never tracked (by design: the ROI excludes it) |
+| Gate while idle | 160 of 1,614 idle seconds passed (0.099), all of them Segment keyframes; **0 motion passes** from noise, drift, the tree or the lights step |
+| Speed | 1,800 s of footage in 331 s: 5.4x real time (872 CPU s) |
+| Peak memory | 1.7 GB |
+
+Real-time run (Segments released at the 10 s pace a Recorder would write them, Watcher and Notifier running, 110-330 s of the scene): all 4 unscheduled alerts in the window were delivered, **alert latency median 17.4 s, max 29.5 s** from the event to the photo. Most of it is waiting for the 10 s Segment to close, plus ingest and the Notifier poll. The scheduled rule is left out of this run, because the replay renames files to the wall clock and so moves them out of the rule's 20:00-20:10 window.
+
+Activity log tags on the scene's 9 tracks, after the fixes in task 18.3: vehicle type 2/2 right, vehicle colour 1/1 right (the white car at dusk is left untagged), person top colour about 3-4 of 5 right with 2 tracks untagged. Tags for people who overlap are still unreliable.
+
+## Decisions (V2 Step 1)
+
+| Decision | Choice | Evidence |
+|---|---|---|
+| Motion gate | `diff`, threshold 0.02 (default), ROI per camera over the watched area | 0 missed incidents at every diff threshold; 0 idle motion passes on the scene; mog2 passes 97-99% at 1 fps |
+| Track_Rate | 3 fps while the gate is open | dwell, count and cross alerts within 1.4 s of the scripted event; the detector is 11% busy at 3 fps |
+| Detector input | 384x640, 2 threads | recall 0.98 vs 640 square at 60% of the cost (table above) |
+| Segment_Length | 10 s | real-time alert latency median 17 s / max 30 s. Shorter Segments would cut latency but multiply files and ffmpeg overhead; revisit only if 30 s is too slow in use |
+| Cameras per laptop (no VLM) | about 1.5 cameras busy every second, many more mostly idle | compilation: 247 s to ingest 387 busy seconds on AC; the generated scene (mostly idle) runs 5.4x real time on battery |
+| VLM | local `qwen3-vl:2b-instruct`, on demand only (`/describe`, rules with a `verify` question) | about 40 s per image; never per event. No cloud VLM, so footage never leaves the machine |
+| Attribute tags | OpenCLIP zero-shot, per-track vote, only crops no other detection overlaps, minimum probability 0.65 | wrong tags had probabilities 0.46-0.60, right ones 0.70+ (task 18.3) |
+
+Step-by-step commands for recording, labelling and measuring real footage and for the live Telegram test: [docs/REAL_FOOTAGE_AND_TELEGRAM.md](docs/REAL_FOOTAGE_AND_TELEGRAM.md).
+
+Still open: the same runs on real continuous footage from the user's camera (the scene is generated, so lighting, compression and real people's movement are only approximated), and a real Telegram chat.
+
+## Embedder (V2 Step 4)
+
+**Search now uses OpenCLIP ViT-B/32 trained on DataComp-XL (`datacomp_xl_s13b_b90k`) instead of LAION-2B (`laion2b_s34b_b79k`).** It has the same architecture, the same 512-d vectors and the same speed, and it finds things better.
+
+### Upgrading an existing installation
+
+```powershell
+venv\Scripts\python.exe scripts\fetch_models.py      # downloads the new weights
+venv\Scripts\python.exe scripts\reembed.py           # converts the stored footage (stop run_live.ps1 first)
+```
+
+Until you run `reembed.py`, ingest and search refuse to run, with a message naming both embedders. Mixing two vector spaces in one index would make every search silently wrong.
+
+`reembed.py` re-encodes every stored frame and crop from its source video, at about 0.1 s per stored vector. It keeps every row, track, alert and activity, and replaces the index atomically. A store with no vectors switches by itself.
+
+### How the candidates were compared
+
+`scripts/embed_eval.py` re-encodes exactly the 812 images the product stored for the Compilation_Video (269 frames and 543 detector crops) with each candidate. It then runs the 20 queries of `eval/queries_compilation.yaml` through the product's own search: top-k, clustering into Events and padding. Each query has one relevant scene, so p@5 is capped at 0.2; the rank of the first relevant Event (hit@1, hit@3, MRR) is the measure.
+
+Speed is ms per image at batch 8 on the Target_Hardware, on AC power.
+
+| Model | Licence | hit@1 | hit@3 | MRR | ms/image | Peak RSS |
+|---|---|---|---|---|---|---|
+| ViT-B/32 laion2b (before) | MIT | 0.70 | 0.95 | 0.821 | 104 | 2.4 GB |
+| **ViT-B/32 DataComp-XL (now)** | MIT | **0.80** | 0.95 | **0.879** | 108 | 2.4 GB |
+| ViT-B/32-256 DataComp | MIT | 0.70 | 0.90 | 0.823 | 136 | 2.4 GB |
+| SigLIP 2 ViT-B/16-256 | Apache 2.0 | 0.85 | 1.00 | 0.925 | 477 | 4.4 GB |
+| EmbeddingGemma 2, 70 image tokens | Apache 2.0 | 0.80 | 0.95 | 0.879 | 2,441 | 3.7 GB |
+| EmbeddingGemma 2, default 280 tokens | Apache 2.0 | not run | | | ~12,500 | |
+| MobileCLIP2-S0 | research only | 0.75 | 0.95 | 0.842 | 96* | 1.9 GB |
+| MobileCLIP2-S2 | research only | 0.80 | 0.90 | 0.869 | 256* | 2.1 GB |
+| MobileCLIP2-B | research only | 0.85 | 0.95 | 0.900 | 355* | 2.5 GB |
+
+\* measured while another job was running, so somewhat slow.
+
+**Why DataComp-XL:**
+- It ranks the relevant scene at least as high as before on every one of the 20 queries, higher on 3 (police car at night, barber, front door), and lower on none.
+- It needs no code change beyond the weights.
+- Twenty queries is a small sample: the gain is 2 more queries right at hit@1.
+
+**Why not the others:**
+- **SigLIP 2** is the best, but 4.6x slower and needs 4.4 GB. At about 3 crops per busy second it would use more than one camera's whole CPU budget.
+- **EmbeddingGemma 2** matches DataComp-XL only at 23x the cost (2.4 s per image with the smallest image budget, 12.5 s by default). It cannot keep up with even one camera on this CPU.
+- **MobileCLIP2** weights are under Apple's research-only licence, which excludes products.
+
+### Attribute tags with the new embedder
+
+The activity log's tags come from the same embedder, so they were checked again: `scripts/attr_eval.py` on 51 hand-labelled crops of the Compilation_Video (70 picked; detector false positives and blurs left out) (`eval/attributes_compilation.yaml`), each tagged on its own at the product's minimum probability of 0.65:
+
+| Group | laion2b (before): right / wrong / no tag | DataComp-XL (now) |
+|---|---|---|
+| Person top colour (22 crops) | 16 / 2 / 4 | 16 / 1 / 5 |
+| Vehicle colour (28) | 18 / 3 / 7 | 18 / 3 / 7 |
+| Vehicle type (25) | 18 / 3 / 4 | 16 / 4 / 5 |
+
+- **SUV and van are now one tag, "SUV/van".** Both models confused them in both directions (SUVs read as vans, minivans as SUVs). With separate tags, DataComp-XL got vehicle type wrong 9 times out of 20 tags; merged, 4 out of 20.
+- **Every group is above the 70% bar of Requirement 4A.3.**
+- **On the generated scene, one silver car came out "black" (0.87).** Vehicle colour in poor light stays the weakest tag.
+
+### Usage notes from the model cards
+
+Both ViT-B/32 model cards (LAION) carry the MIT licence. They also say that "any deployed use case of the model - whether commercial or not - is currently out of scope" and that surveillance uses are out of scope. These are the authors' recommendations, not licence terms, and they applied equally to the previous checkpoint. NAB Sentry uses the embedder only for text search over the owner's own footage: no identification of people and no face recognition. Read the cards before deploying commercially.
 
 ## Security limitations
 

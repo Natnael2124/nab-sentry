@@ -26,6 +26,11 @@ touched, so each passed frame also gets ``crop`` vectors with class, confidence,
 (Requirements 4.5, 5.2). A missing or unreadable ONNX file exits 6 with its path and the
 Model_Fetcher command (Requirement 4.6). ``--set enable_detector=false`` gives frame-only ingest.
 
+Watch rules (V2): when ``config/rules.yaml`` (``--rules``) exists it is loaded and checked
+against ``config/cameras.yaml`` (``--cameras``); a bad rule exits 2 before any model loads.
+Rules fire inside each video's transaction and write ``alerts`` rows plus snapshots under
+``data/alerts/`` for the Notifier.
+
 Tracking (V2): with ``enable_tracking`` (default) and the detector on, a
 :class:`~nab_sentry.track.live.LiveTracks` runs the detector at ``track_rate`` while a scene is
 active and tracks objects per camera, across consecutive Segments in watch mode.
@@ -58,6 +63,7 @@ from nab_sentry.startup import enable_offline_mode  # noqa: E402  (stdlib-only)
 enable_offline_mode()
 
 from nab_sentry.config import Config, ConfigError, load_config, parse_set_args  # noqa: E402
+from nab_sentry.embed.compat import EmbedderMismatch  # noqa: E402
 from nab_sentry.errors import ModelMissingError  # noqa: E402
 from nab_sentry.ingest.pipeline import VIDEO_EXTENSIONS, IngestPipeline  # noqa: E402
 from nab_sentry.logging_setup import get_logger, setup_logging  # noqa: E402
@@ -73,7 +79,7 @@ EXIT_INDEX = 5
 EXIT_MODEL_LOAD = 6
 EXIT_INTERRUPTED = 130
 
-EMBEDDER_REL = "open_clip/ViT-B-32-laion2b_s34b_b79k/open_clip_pytorch_model.bin"
+from nab_sentry.model_files import EMBEDDER_REL  # noqa: E402  (the one embedder, V2 Step 4)
 
 # (cfg, manifest files rel->abs) -> Encoder / Detector
 EncoderFactory = Callable[[Config, dict[str, Path]], Any]
@@ -113,7 +119,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cameras", type=Path, default=_ROOT / "config" / "cameras.yaml",
                    help="Camera_Config for per-camera segment lengths (watch mode)")
     p.add_argument("--poll-s", type=float, default=1.0, help="watch-mode poll interval")
+    p.add_argument("--rules", type=Path, default=_ROOT / "config" / "rules.yaml",
+                   help="watch rules (used when the file exists; needs --cameras)")
     return p
+
+
+def load_rule_set(rules_path: Path, cameras_path: Path) -> list:
+    """Rules from ``rules_path`` checked against the Camera_Config; [] when the file is absent.
+    Raises ``RulesConfigError`` / ``CameraConfigError`` naming every bad field."""
+    if not rules_path.is_file():
+        return []
+    from nab_sentry.live.camera_config import load_cameras
+    from nab_sentry.rules.config import load_rules
+
+    return load_rules(rules_path, load_cameras(cameras_path))
 
 
 def segment_lengths(path: Path) -> Callable[[str], float]:
@@ -199,6 +218,14 @@ def _run(
         return EXIT_CONFIG
 
     setup_logging(cfg.logs_dir)
+    from nab_sentry.live.camera_config import CameraConfigError
+    from nab_sentry.rules.config import RulesConfigError
+
+    try:
+        rules = load_rule_set(args.rules, args.cameras)
+    except (RulesConfigError, CameraConfigError) as exc:
+        _err(str(exc))
+        return EXIT_CONFIG
     try:
         files = require_models(cfg.models_dir, logger=log)
     except SystemExit as exc:  # require_models prints the failing files + fetch command
@@ -247,10 +274,26 @@ def _run(
 
             # One instance for the whole run: in watch mode tracks continue across Segments.
             kw["tracker"] = LiveTracks.from_config(cfg)
-        pipeline = IngestPipeline(cfg, db, index, encoder, detector, **kw)
+            if rules:
+                kw["rules"] = rules
+                log.info("watch rules: %s", ", ".join(f"{r.id} ({r.camera})" for r in rules))
+        elif rules:
+            log.warning("%d watch rule(s) ignored: rules need the detector and tracking", len(rules))
+        rois = camera_rois(args.cameras)
+        if rois:
+            kw["rois"] = rois
+        cams = camera_specs(args.cameras)
+        if cams:
+            kw["cameras"] = cams
+        try:
+            pipeline = IngestPipeline(cfg, db, index, encoder, detector, **kw)
+        except EmbedderMismatch as exc:
+            _err(str(exc))
+            return EXIT_INDEX
         pipeline.reconcile()
         if args.watch:
-            return _watch(cfg, pipeline, segment_lengths(args.cameras), args.poll_s)
+            return _watch(cfg, pipeline, segment_lengths(args.cameras), args.poll_s,
+                          live_camera_ids(args.cameras))
         report = pipeline.ingest_paths(videos)
         total = index.ntotal
         print(f"ingested={report.ingested} failed={report.failed} "
@@ -264,13 +307,56 @@ def _run(
         db.close()
 
 
+def camera_specs(path: Path) -> list:
+    """The Camera_Config entries (labels, zones and lines for the activity log); [] if absent."""
+    from nab_sentry.live.camera_config import CameraConfigError, load_cameras
+
+    if not path.is_file():
+        return []
+    try:
+        return load_cameras(path)
+    except CameraConfigError:
+        return []
+
+
+def camera_rois(path: Path) -> dict[str, tuple[float, float, float, float]]:
+    """camera_id -> motion ROI from the Camera_Config (cameras without one use the whole frame)."""
+    from nab_sentry.live.camera_config import CameraConfigError, load_cameras
+
+    if not path.is_file():
+        return {}
+    try:
+        return {c.camera_id: c.roi for c in load_cameras(path) if c.roi is not None}
+    except CameraConfigError:
+        return {}
+
+
+def live_camera_ids(path: Path) -> list[str]:
+    """Camera IDs of the Camera_Config (retention only ever touches these cameras)."""
+    from nab_sentry.live.camera_config import CameraConfigError, load_cameras
+
+    if not path.is_file():
+        return []
+    try:
+        return [c.camera_id for c in load_cameras(path)]
+    except CameraConfigError:
+        return []
+
+
 def _watch(cfg: Config, pipeline: IngestPipeline, segment_s_for: Callable[[str], float],
-           poll_s: float) -> int:
+           poll_s: float, live_cameras: Sequence[str] = ()) -> int:
     import threading
 
+    from nab_sentry.ingest.retention import apply_retention
     from nab_sentry.ingest.watch import Watcher
 
-    watcher = Watcher(pipeline, cfg.videos_dir, segment_s_for, poll_s=poll_s)
+    def retention(now: float) -> None:
+        apply_retention(cfg, pipeline.db, pipeline.index, live_cameras, now)
+
+    watcher = Watcher(pipeline, cfg.videos_dir, segment_s_for, poll_s=poll_s,
+                      maintenance=retention if live_cameras else None)
+    if live_cameras:
+        print(f"retention: {cfg.retention_days:g} days of footage for {', '.join(live_cameras)}", flush=True)
     print(f"watching {cfg.videos_dir} for closed Segments; Ctrl+C to stop", flush=True)
     watcher.run(threading.Event())  # Ctrl+C -> KeyboardInterrupt -> main() returns 130
     return EXIT_OK

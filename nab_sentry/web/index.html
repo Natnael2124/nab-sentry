@@ -20,6 +20,7 @@
       #start, #end   <input type="datetime-local">, empty by default
       #cls           <select>; value="" = "All classes" + the six Target_Classes
       #search-btn    submit button; disable while a request is in flight
+      #today-btn     button: loads today's activity log (GET /api/activities, Step 3) into #results
     Status / results
       #status        role=status aria-live=polite: loading, "No matching incidents found", errors
       #results       <ol>; app.js renders one <li><button class="card"> per Event:
@@ -85,6 +86,7 @@
 
       <div class="field field-submit">
         <button id="search-btn" type="submit">Search</button>
+        <button id="today-btn" type="button" class="secondary">Today's activity</button>
       </div>
     </form>
 

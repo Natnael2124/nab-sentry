@@ -27,6 +27,7 @@ also gets for free); :meth:`IngestPipeline.reconcile` repairs that state on the 
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -34,10 +35,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+import cv2
 import numpy as np
 
 from nab_sentry.config import Config, effective_track_rate
 from nab_sentry.embed.clip_encoder import EmbeddingError, Encoder
+from nab_sentry.embed.compat import check_embedder
 from nab_sentry.ingest.detector import Detection, Detector, clamp_box
 from nab_sentry.ingest.metadata import resolve_metadata, src_hash, to_aware_local
 from nab_sentry.ingest.motion import GateDecision, MotionGate
@@ -52,6 +55,14 @@ from nab_sentry.ingest.transcode import PlaybackJob, default_playback, part_path
 from nab_sentry.logging_setup import get_logger
 from nab_sentry.store.db import MetadataStore, NewFrame, NewTrackObs, NewVector, NewVideo
 from nab_sentry.store.vector_index import VectorIndex
+from nab_sentry.alerts.media import ALERT_FILE_RE, draw_snapshot, snapshot_name
+from nab_sentry.describe.activity import line_crossings, summary, zone_seconds
+from nab_sentry.describe.attributes import AttributeTagger, phrase
+from nab_sentry.live.camera_config import CameraSpec
+from nab_sentry.rules.config import Rule
+from nab_sentry.rules.engine import Firing, Obs, RuleEngine
+from nab_sentry.rules.geometry import anchor
+from nab_sentry.store.db import NewAlert
 from nab_sentry.track import TrackSink
 from nab_sentry.track.bytetrack import TrackRecord
 
@@ -225,6 +236,21 @@ class _VideoState:
     camera_id: str | None = None
     track_ids_before: dict[int, int] | None = None  # camera's key -> track_id map at the start
     crop_keys: list[tuple[int, int]] = field(default_factory=list)  # (vector_id, track key)
+    start_t: float = 0.0  # epoch seconds of the video's first frame
+    engine: RuleEngine | None = None  # this camera's rules (V2 Requirement 12)
+    engine_snap: object = None
+    firings: list[_PendingAlert] = field(default_factory=list)
+
+
+@dataclass
+class _PendingAlert:
+    """A rule that fired during the current video; written with the video's track rows."""
+
+    rule: Rule
+    firing: Firing
+    offset_s: float
+    det_class: str | None
+    snapshot: str
 
 
 class IngestPipeline:
@@ -240,7 +266,11 @@ class IngestPipeline:
         *,
         checkpoint: Checkpoint | None = None,
         tracker: TrackSink | None = None,
+        rules: Sequence[Rule] = (),
+        rois: dict[str, tuple[float, float, float, float]] | None = None,
+        cameras: Sequence[CameraSpec] = (),
     ) -> None:
+        check_embedder(db, encoder)  # never add vectors of another embedder to the index (Step 4)
         self.cfg = cfg
         self.db = db
         self.index = index
@@ -250,6 +280,14 @@ class IngestPipeline:
         # camera_id -> {tracker key -> tracks.track_id} for tracks already in the store; tracks
         # continuing into the next Segment extend their row instead of starting a new one.
         self._track_ids: dict[str, dict[int, int]] = {}
+        # Watch rules need tracks: without a tracker they are ignored (logged once per camera).
+        self.rules = list(rules)
+        # camera_id -> motion ROI from the Camera_Config (V2 Requirement 3.1); none = whole frame
+        self.rois = dict(rois or {})
+        # Camera_Config entries (labels, zones, lines) for the activity log (Step 3)
+        self.cameras = {c.camera_id: c for c in cameras}
+        self._tagger: AttributeTagger | None = None
+        self._engines: dict[str, RuleEngine] = {}
         self.open_source = open_source
         self.start_playback = start_playback or (
             lambda src, dst: default_playback(src, dst, cfg.playback_max_width)
@@ -401,13 +439,18 @@ class IngestPipeline:
         gate = MotionGate(
             cfg.motion_threshold, cfg.keyframe_interval_s, cfg.gate_width,
             cfg.motion_pixel_delta, cfg.motion_method,  # type: ignore[arg-type]
+            roi=self.rois.get(meta.camera_id),
         )
         gate.reset()
         if tracker is not None:
             st.camera_id = meta.camera_id
             st.track_ids_before = dict(self._track_ids.get(meta.camera_id, {}))
-            tracker.begin_video(meta.camera_id, to_aware_local(meta.start_time).timestamp(), video_id)
+            st.start_t = to_aware_local(meta.start_time).timestamp()
+            tracker.begin_video(meta.camera_id, st.start_t, video_id)
             st.tracking = True
+            st.engine = self._engine(meta.camera_id)
+            if st.engine is not None:
+                st.engine_snap = st.engine.snapshot()
         queue: list[_Pending] = []
         batch = int(cfg.batch_size)
         passed = 0
@@ -421,8 +464,8 @@ class IngestPipeline:
                 # fraction, whatever the gate's label: a keyframe can carry motion too), or
                 # a track is alive. A still keyframe or the first frame starts nothing.
                 if tracker is not None and (last_motion or tracker.active):
-                    tracker.update(frame, self._run_detector(detector, path, frame.offset_s,
-                                                             frame.image))
+                    self._track_frame(tracker, frame, self._run_detector(
+                        detector, path, frame.offset_s, frame.image), st)
                 continue
             decision = gate.evaluate(frame)
             last_motion = decision.passed and decision.reason != "first" and (
@@ -431,8 +474,8 @@ class IngestPipeline:
                 # static / empty: no row, no thumbnail, no embedding (3.7, 3.9); a live track
                 # keeps the detector running so a person standing still is not lost.
                 if tracker is not None and tracker.active and frame.image.size:
-                    tracker.update(frame, self._run_detector(detector, path, frame.offset_s,
-                                                             frame.image))
+                    self._track_frame(tracker, frame, self._run_detector(
+                        detector, path, frame.offset_s, frame.image), st)
                 continue
             passed += 1
             image = frame.image
@@ -450,7 +493,7 @@ class IngestPipeline:
             dets = self._run_detector(detector, path, frame.offset_s, image)
             keys: dict[int, int | None] = {}
             if tracker is not None:
-                keys = {id(d): k for d, k in zip(dets, tracker.update(frame, dets) or ())}
+                keys = {id(d): a.track_key for d, a in zip(dets, self._track_frame(tracker, frame, dets, st))}
             for det, box in self._crops(dets, image):
                 x1, y1, x2, y2 = box
                 queue.append(_Pending(frame_id, image[y1:y2, x1:x2], det, box, keys.get(id(det))))
@@ -587,9 +630,109 @@ class IngestPipeline:
         links = [(v, ids[k]) for v, k in st.crop_keys if k in ids]
         if links:
             self.db.link_vectors(links)
+        if st.firings:
+            mutes = self.db.active_mutes(0)
+            for pa in st.firings:
+                ms = round(pa.firing.t * 1000)
+                muted = mutes.get(pa.rule.id, 0) > ms
+                self.db.insert_alert(NewAlert(
+                    kind="rule", trigger_epoch_ms=ms, state="suppressed" if muted else "pending",
+                    rule_id=pa.rule.id, rule_name=pa.rule.name, severity=pa.rule.severity,
+                    camera_id=camera_id, track_id=ids.get(pa.firing.track_key) if pa.firing.track_key is not None else None,
+                    video_id=st.video_id, trigger_offset_s=pa.offset_s, det_class=pa.det_class,
+                    n_tracks=pa.firing.n_tracks, snapshot_path=pa.snapshot))
+                log.warning("alert: %s on %s at %.1f s (%s)%s", pa.rule.id, camera_id, pa.offset_s,
+                            pa.det_class, " [muted]" if muted else "")
+        for rec in records:
+            if rec.key in ids:
+                self._update_activity(camera_id, ids[rec.key], rec.cls, st)
         for rec in records:
             if rec.ended:
                 ids.pop(rec.key, None)  # no more observations will come for it
+
+    def _update_activity(self, camera_id: str, track_id: int, det_class: str, st: _VideoState) -> None:
+        """(Re)write the track's activity row from its whole stored history (Requirement 19)."""
+        pts = self.db.track_points(track_id)
+        if not pts:
+            return
+        ground = [(ms / 1000, ((x1 + x2) / 2 / w, y2 / h)) for ms, x1, y1, x2, y2, w, h in pts]
+        spec = self.cameras.get(camera_id)
+        zones = dict(spec.zones) if spec else {}
+        lines = dict(spec.lines) if spec else {}
+        zsec = zone_seconds(ground, zones)
+        cross = line_crossings(ground, lines)
+        crops = self.db.track_crops(track_id)
+        tags: dict = {}
+        clean = [c for c in crops if c[3]]  # crops no other detection overlaps
+        best = max(clean or crops, key=lambda c: c[2] * c[1])[0] if crops else None
+        if clean and self.encoder is not None and hasattr(self.encoder, "encode_text"):
+            # Only clean crops vote: a crop with two people in it gives mixed colours, and a
+            # crowded track gets no tag rather than a wrong one.
+            if self._tagger is None:
+                self._tagger = AttributeTagger(self.encoder.encode_text)
+            vecs = [v for v in (self._vector(c[0], st) for c in clean) if v is not None]
+            tags = self._tagger.tag(det_class, vecs)
+        label = (spec.label if spec else None) or self.db.camera_label(camera_id) or camera_id
+        text = summary(ground[0][0], ground[-1][0], label, phrase(det_class, tags), zsec, cross)
+        self.db.upsert_activity(
+            track_id, camera_id, det_class, pts[0][0], pts[-1][0], json.dumps(zsec),
+            json.dumps([{**c, "t": round(c["t"], 2)} for c in cross]),
+            json.dumps({k: list(v) for k, v in tags.items()}), best, text)
+
+    def _vector(self, vector_id: int, st: _VideoState) -> np.ndarray | None:
+        """A stored embedding: staged in this video's transaction, or already in the index."""
+        try:
+            return st.staged_vecs[st.staged_ids.index(vector_id)]
+        except ValueError:
+            pass
+        try:
+            return np.asarray(self.index.faiss_index.reconstruct(int(vector_id)), np.float32)
+        except Exception:  # noqa: BLE001 - e.g. removed by retention meanwhile
+            return None
+
+    def _engine(self, camera_id: str) -> RuleEngine | None:
+        """This camera's RuleEngine (created once, cooldowns seeded from stored alerts)."""
+        if camera_id not in self._engines:
+            rules = [r for r in self.rules if r.camera == camera_id]
+            if not rules:
+                return None
+            eng = RuleEngine(rules)
+            for rid, ms in self.db.last_rule_fires(camera_id).items():
+                eng.set_last_fire(rid, ms / 1000)
+            self._engines[camera_id] = eng
+        return self._engines[camera_id]
+
+    def _track_frame(self, tracker: TrackSink, frame: Any, dets: list[Detection],
+                     st: _VideoState) -> list[Any]:
+        """Feed the tracker, then the camera's rules; a firing writes its snapshot now (the frame
+        is in memory) and is stored with the video's track rows."""
+        res = list(tracker.update(frame, dets) or ())
+        eng = st.engine
+        if eng is None or frame.image is None or not frame.image.size:
+            return res
+        h, w = frame.image.shape[:2]
+        obs, by_key = [], {}
+        for a in res:
+            if getattr(a, "track_key", None) is None:
+                continue
+            obs.append(Obs(a.track_key, a.detection.cls, anchor(a.detection.box, w, h), a.confirmed))
+            by_key[a.track_key] = a.detection
+        t = st.start_t + float(frame.offset_s)
+        for f in eng.step(t, datetime.fromtimestamp(t), obs):
+            rule = next(r for r in eng.rules if r.id == f.rule_id)
+            det = by_key.get(f.track_key)
+            name = snapshot_name(st.video_id or 0, rule.id, round(t * 1000))
+            dst = self.cfg.alerts_dir / name
+            st.written_files.append(dst)
+            self.cfg.alerts_dir.mkdir(parents=True, exist_ok=True)
+            when = datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S")
+            img = draw_snapshot(frame.image, det.box if det else None, f"{rule.name} | {when}",
+                                zone=rule.zone_poly, line=rule.line_pts)
+            if not cv2.imwrite(str(dst), img, [cv2.IMWRITE_JPEG_QUALITY, 85]):
+                raise OSError(f"could not write alert snapshot {dst}")
+            st.firings.append(_PendingAlert(rule, f, float(frame.offset_s),
+                                            det.cls if det else None, name))
+        return res
 
     # -- compensation --------------------------------------------------------------------------
 
@@ -613,6 +756,8 @@ class IngestPipeline:
                 log.error("track rollback failed for %s", path, exc_info=True)
             if st.camera_id is not None and st.track_ids_before is not None:
                 self._track_ids[st.camera_id] = st.track_ids_before
+            if st.engine is not None and st.engine_snap is not None:
+                st.engine.restore(st.engine_snap)
         try:
             self.db.rollback()  # no-op unless a failed COMMIT left the transaction open
         except Exception:
@@ -683,8 +828,9 @@ class IngestPipeline:
             deleted_files += self._delete_video_files(vid)
             deleted_videos.append(vid)
 
-        referenced = self.db.referenced_files()
-        for directory, pattern in ((cfg.thumbs_dir, _THUMB_RE), (cfg.playback_dir, _PLAYBACK_RE)):
+        referenced = self.db.referenced_files() | self.db.referenced_alert_files()
+        for directory, pattern in ((cfg.thumbs_dir, _THUMB_RE), (cfg.playback_dir, _PLAYBACK_RE),
+                                   (cfg.alerts_dir, ALERT_FILE_RE)):
             if not directory.is_dir():
                 continue
             for f in sorted(directory.iterdir()):

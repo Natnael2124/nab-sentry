@@ -16,12 +16,12 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from nab_sentry.model_files import EMBEDDER_REL
 from nab_sentry.config import Config
 
 pytestmark = pytest.mark.slow
 
-WEIGHTS_PATH = (Config().models_dir / "open_clip" / "ViT-B-32-laion2b_s34b_b79k"
-                / "open_clip_pytorch_model.bin")
+WEIGHTS_PATH = Config().models_dir / EMBEDDER_REL
 
 MIN_COSINE = 0.999
 

@@ -1,0 +1,107 @@
+# Search evaluation queries for the Compilation_Video (CAM-SEC01, video start 2026-10-07T23:00:10).
+# Written by Claude on 2026-10-26 from eval/ground_truth/CAM-SEC01.yaml (task 2.5). Windows are whole
+# scenes at 1 s resolution: the thing described is visible somewhere in that window. Use with:
+#   venv\Scripts\python.exe scripts\evaluate.py --queries eval\queries_compilation.yaml
+#   venv\Scripts\python.exe scripts\embed_eval.py ...   (embedder comparison, Step 4)
+# Caveat: the queries were written by someone who has seen the footage, and a compilation of
+# distinct scenes is easier than one fixed camera; add queries on real footage when it exists.
+queries:
+  - text: "snow sliding off a carport onto parked cars"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:00:17"
+    end:   "2026-10-07T23:00:25"
+
+  - text: "white pickup truck parked in a driveway"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:00:26"
+    end:   "2026-10-07T23:00:33"
+
+  - text: "police officers at a traffic stop"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:00:34"
+    end:   "2026-10-07T23:00:42"
+
+  - text: "child swimming in a pool"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:00:43"
+    end:   "2026-10-07T23:00:53"
+
+  - text: "woman in a yellow shirt"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:00:43"
+    end:   "2026-10-07T23:00:53"
+
+  - text: "minivan backing out of a wet driveway"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:00:54"
+    end:   "2026-10-07T23:01:05"
+
+  - text: "person mowing the lawn at night"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:01:33"
+    end:   "2026-10-07T23:01:42"
+
+  - text: "cars on a highway at night"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:01:43"
+    end:   "2026-10-07T23:01:53"
+
+  - text: "person walking on a snowy street"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:02:01"
+    end:   "2026-10-07T23:02:09"
+
+  - text: "child in red clothes on a porch with a dog"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:02:45"
+    end:   "2026-10-07T23:02:52"
+
+  - text: "people sitting at tables in a restaurant"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:02:53"
+    end:   "2026-10-07T23:03:03"
+
+  - text: "man in a red shirt mowing a lawn"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:03:27"
+    end:   "2026-10-07T23:03:34"
+
+  - text: "woman pushing a baby stroller"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:04:25"
+    end:   "2026-10-07T23:04:35"
+
+  - text: "police car on a street at night"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:04:36"
+    end:   "2026-10-07T23:04:47"
+
+  - text: "barber cutting a customer's hair"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:04:56"
+    end:   "2026-10-07T23:05:04"
+
+  - text: "person at the front door covering the camera"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:05:24"
+    end:   "2026-10-07T23:05:33"
+
+  - text: "fire truck on a wet street"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:05:45"
+    end:   "2026-10-07T23:05:57"
+
+  - text: "family eating on the living room floor"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:05:58"
+    end:   "2026-10-07T23:06:06"
+
+  - text: "people running across a street"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:06:07"
+    end:   "2026-10-07T23:06:21"
+
+  - text: "car crashes through a cafe window"
+    camera_id: CAM-SEC01
+    start: "2026-10-07T23:06:22"
+    end:   "2026-10-07T23:06:35"

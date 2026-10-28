@@ -26,6 +26,7 @@ from nab_sentry.ingest.sources import DecodedFrame
 from nab_sentry.store.db import MetadataStore
 from nab_sentry.store.vector_index import VectorIndex
 from nab_sentry.track import TrackSink
+from nab_sentry.track.bytetrack import Assignment
 from tests.fakes import FakeEncoder, FakePlayback, FakeSource
 
 W, H = 32, 24
@@ -94,7 +95,7 @@ class FakeTrackSink:
 
     def update(self, frame, detections) -> list:
         self.updates.append((frame.index, frame.offset_s, len(detections)))
-        return [None] * len(detections)
+        return [Assignment(d, None, False) for d in detections]
 
     def begin_video(self, camera_id, start_t, video_id=None) -> None:
         pass
