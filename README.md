@@ -187,6 +187,17 @@ Synthetic: `CAM-SYN01_20250101T080000.mp4`, 200,000-vector FAISS index.
 
 Qwen3-VL 2B describes scenes correctly ("man in a red striped shirt and black shorts mowing the lawn, white car and white SUV parked behind him") but occasionally invents details ("lifts the mower to the sky"). Encoding one image takes 35-48 s on this CPU; Ollama encodes every image into about 1,100 tokens whatever the input size, so downscaling does not help. Use: `/ask` about one clip, rules with `severity: verify`, overnight summaries. Never per event. The plain `qwen3-vl:2b` tag is the thinking variant and ignores `think: false`.
 
+Idle and under ingest load (task 4.2; 2 scenes x 2 repeats, `num_ctx` 4096, AC power, 2026-10-28). "Under load" means the 30-minute scene was being ingested at the same time:
+
+| Input | Idle, wall median | Under load | Image reading (prompt eval) | Generation |
+|---|---|---|---|---|
+| Single frame (JSON answer) | 56 s | 67 s (+18%) | 44 s / 51 s, ~1,080 tokens | 13.8 / 10.2 tok/s |
+| 2x2 person-crop storyboard | 82 s | 108 s (+31%) | 44 s / 54 s | 13.0 / 9.6 tok/s (hits the 512-token cap) |
+
+- **Ingest under the VLM's load** still ran at 6.4x real time (7.3x alone), with all 16 scene alerts.
+- **Ollama's memory** peaks at about 4.2 GB.
+- **A typical answer** for the traffic-stop scene is correct on the police SUV, the officer, the on-screen timestamp and the caption, but adds "numerous bullet holes" that are probably not there. It verifies and describes on request; it never raises alerts on its own.
+
 ### Zero-shot attribute tags (no VLM)
 
 `scripts/attr_spike.py` tags crops from their existing OpenCLIP embeddings (about 2 ms per crop). On 24 person and 12 vehicle crops of the compilation video, checked by eye: vehicle colour and type about 80% correct, person top colour about 60% (right on clean single-person crops), clothing type / carried objects / headwear unreliable. About a quarter of the sampled person crops were detector false positives (title-card text, a cat, a fence).

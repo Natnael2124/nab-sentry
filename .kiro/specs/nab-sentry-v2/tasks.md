@@ -54,14 +54,15 @@ Footage rule: the Compilation_Video is used only for throughput, gate recall and
     - Done on the 30-min generated scene: every diff threshold 0.01-0.05 misses 0 objects and idles at the keyframe floor 0.098; mog2 0.01 without ROI 0.128. Repeat on real Continuous_Footage when 5.4 exists
     - _Requirements: 3.4_
 
-- [ ] 4. VLM latency
+- [x] 4. VLM latency
   - [x] 4.1 Implement `scripts/vlm_bench.py` (frame / 2x2 grid / 2x2 person-crop storyboard; cold + warm; Ollama timings; Ollama RSS; think off by default) with pure-helper tests in `tests/test_vlm_bench.py`
     - _Requirements: 4.1, 4.2, 4.3_
   - [x] 4.0 Gemma 4 E2B dropped (2026-10-18): 6.7 GB loaded, 16-23 s per new image, and its image input did not work (see design findings). Model removed from Ollama; `qwen3-vl:2b-instruct` is the first on-demand candidate
   - [x] 4.1a Add the vision sanity check (red image, `HELLO 42` text) and per-call cache busting to `vlm_bench.py`; default model `qwen3-vl:2b-instruct`
     - _Requirements: 4.1, 4.3_
   - [x] 4.1b Idle run of `qwen3-vl:2b-instruct` (2026-10-18): sanity passes; ~1,100 image tokens at any input size, 35-48 s image encoding, ~13 tok/s, ~40 s per call with a one-sentence answer, process RSS peak 4.7 GB. Recorded in README. Follow-up if on-demand latency matters: llama.cpp server with an image-token cap, or a smaller VLM (SmolVLM2 / Moondream) with the same sanity check
-  - [ ] 4.2 Run idle (`--label idle`) and loaded (`--label loaded`, while `scripts/benchmark.py` runs) on the Target_Hardware; record both summaries and 3 sample outputs per input in the README
+  - [x] 4.2 Run idle (`--label idle`) and loaded (`--label loaded`, while `scripts/benchmark.py` runs) on the Target_Hardware; record both summaries and 3 sample outputs per input in the README
+    - Done 2026-10-28, reduced to 2 scenes x 2 repeats (an hour otherwise), load = scene ingest instead of benchmark.py: frame 56 s idle / 67 s loaded, storyboard 82 / 108 s; ingest 6.4x real time beside it. One sample answer in the README (it embellishes)
     - _Requirements: 4.4_
   - [x] 4.3 Detector cost at tracking rates (`scripts/det_bench.py`, interleaved timing; results in README): **384x640 rectangular input, 2 threads: 36.7 ms median, recall 0.98 vs 640 (0.93 on small boxes), 11% busy at 3 fps / 18% at 5 fps**. Square 416/480 lose too many small/medium boxes; 4 threads give only 5-10%. The embedder (~37% busy at continuous activity) is now the largest per-camera cost
     - _Requirements: 5.1_
