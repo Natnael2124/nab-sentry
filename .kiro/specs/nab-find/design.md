@@ -20,7 +20,7 @@
 │                                   │ Search · Visits · Find again  │        │
 │                                   │ AI check ──► Gemini API (opt) │        │
 │                                   └───────────────────────────────┘        │
-│                           Case folder: case.db (SQLite), vectors.faiss,    │
+│                           Case folder: case.db (SQLite, vectors included), │
 │                           thumbs/, previews/                               │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -37,10 +37,10 @@ store.
 | UI | HTML/JS in pywebview | Modern look with plain CSS, no build step, video playback with seeking via HTTP Range. Electron/Tauri add a second runtime; Qt is heavier and harder to make look friendly. |
 | Backend | Python, same language as V2 | Reuses the V2 detector post-processing, tracker, vector index and tagger. The time goes to models and decoding (native code), so Python glue is not the bottleneck. |
 | Decoding | FFmpeg subprocess, scaled frames on a pipe | Measured 42x real time decoding every frame vs 8x for OpenCV's capture as V2 uses it; keyframe-only reads 254x (bench/decode_bench.py). Also reads DVR formats OpenCV cannot. |
-| Models | ONNX graphs; OpenVINO on the Intel GPU when present, else ONNX Runtime CPU | CLIP image tower 13 ms/image on the Iris Xe GPU vs ~30-75 ms on CPU (ONNX RT) vs ~127 ms in V2 (PyTorch); YOLO 384x640 7.8 ms GPU vs 18-31 ms CPU (bench/embed_bench.py). No PyTorch in the app (smaller install). |
+| Models | OpenVINO IR (fp16-stored weights) on the Intel GPU when it passes a self-test, else OpenVINO on the CPU | CLIP image tower 13 ms/image on the Iris Xe GPU vs ~30-75 ms on CPU (ONNX RT) vs ~127 ms in V2 (PyTorch); YOLO 384x640 7.8 ms GPU vs 18-31 ms CPU (bench/embed_bench.py). No PyTorch in the app. On the CPU, OpenVINO with the LATENCY hint measured 27 ms/image vs 38 for ONNX Runtime, and the fp16-stored IR halves the model download (590 -> 299 MB); ONNX Runtime was dropped from the build. |
 | int8 CLIP | Rejected | Cosine to fp32 only 0.95; not worth the accuracy. |
 | Embedder | Same as V2: OpenCLIP ViT-B/32 DataComp-XL, exported (tools/export_clip.py; parity cosine 1.0000 images and text) | Best speed/quality found in V2 Step 4. |
-| Store | Per-case SQLite + FAISS (V2 `VectorIndex`) | A case is a folder: easy delete, no cross-case migrations. |
+| Store | Per-case SQLite with the embeddings in it; exact NumPy dot-product search over an in-memory copy | A case is a folder: easy delete. With the vectors in SQLite a crash cannot leave an index out of step, and a case's tens of thousands of vectors search in milliseconds without FAISS. |
 | Cloud VLM | Gemini API over REST (httpx), default `gemini-3.5-flash-lite` | Cheap per image, JSON output, no extra SDK. Only small frames of top moments are sent, after consent. |
 | Video files | Referenced in place, never copied | Footage can be tens of GB. Missing files are reported per video. |
 
@@ -51,8 +51,8 @@ store.
   `apps/desktop/bench/`, `apps/desktop/packaging/`.
 - Imports from V2, read-only: `nab_sentry.ingest.detector` (`letterbox`, `postprocess`,
   `Detection`), `nab_sentry.ingest.motion` (`downscale_gray`, `changed_fraction`),
-  `nab_sentry.track.bytetrack.ByteTracker`, `nab_sentry.store.vector_index.VectorIndex`,
-  `nab_sentry.describe.attributes` (`AttributeTagger`, `phrase`). If V2 ever needs to change one
+  `nab_sentry.track.bytetrack.ByteTracker`, `nab_sentry.describe.attributes` (`AttributeTagger`,
+  `phrase`). If V2 ever needs to change one
   of these, the change is made on the V2 branch with V2's suites, never from here.
 - `apps/desktop/tools/check_isolation.py` fails if the branch changes any V2 path relative to
   its merge base with `v2-step1-measure`; run before every push with the V2 fast suite.
@@ -85,30 +85,33 @@ store.
   batches are padded to a fixed batch of 8 on the GPU (no recompiles).
 
 ### `store.py` - case storage
-Folder per case: `case.json` (name, created, range, camera names), `case.db`, `vectors.faiss`,
-`thumbs/`, `previews/`, `exports.log`.
+Folder per case: `case.db`, `thumbs/`, `previews/`.
 
 ```
+meta(key, value)                             -- name, created, range, status, quick_done
 videos(video_id, path, camera, start_ts, start_estimated, duration_s, fps, width, height,
-       status, error)
+       keyframe_gap_s, status, error)
 spans(video_id, pass, start_s, end_s)        -- work done (resume) per pass
-motion(video_id, start_s, end_s)             -- moving stretches from the quick pass
+motion(video_id, start_s, end_s)             -- activity stretches from the quick pass
 frames(frame_id, video_id, offset_s, thumb)  -- quick-pass frames
-visits(visit_id, video_id, cls, t0, t1, n, max_speed, path_json, tags_json, best_frame_id)
-vectors(vector_id, kind['frame'|'crop'], frame_id, visit_id, video_id, offset_s, x1,y1,x2,y2)
-ai_checks(id, query, vector_ids_json, model, created, result_json, tokens_in, tokens_out)
+visits(visit_id, video_id, cls, t0, t1, n_obs, max_speed, path_json, tags_json, thumb)
+vectors(vector_id, kind['frame'|'crop'], video_id, offset_s, frame_id, visit_id, x1,y1,x2,y2, thumb, vec)
+ai_checks(id, query, model, created, result_json, tokens_in, tokens_out)
 ```
 
-`vector_id` is the FAISS id. The index is saved atomically (V2 `VectorIndex.save`) after every
-batch commit; SQLite commits first, so on restart any vector rows missing from the index are
-dropped and their span re-done (same rule as V2: SQLite is the truth).
+Each processing chunk is one SQLite transaction (frames, vectors, visits, activity, the span done);
+only after it commits are its vectors appended to the in-memory search table, which is rebuilt from
+SQLite when a case opens.
 
 ### `processor.py` - the two passes
 Quick pass per video, in range order:
 1. `FrameReader` in keyframe mode if keyframe spacing <= 4 s, else rate mode at 0.5 fps.
 2. For each frame: motion fraction against the previous frame (V2 `downscale_gray` /
-   `changed_fraction`, 320 px). Keep the frame when it moved (>= 0.02) or 30 s passed since the
-   last kept frame.
+   `changed_fraction`, 320 px) and the detector. Activity (`ActivityRule`): motion >= 0.02 at once;
+   without motion, a person or a vehicle not seen in that place in the last 5 frames must show in two
+   frames in a row (measured: one-frame noise detections and flickering parked-car boxes otherwise
+   sent 42% of a quiet street hour to the detail pass; with the rule 2%). Keep the frame when active
+   or 30 s passed since the last kept frame.
 3. Kept frames: thumbnail (320 px JPEG), batch CLIP, add to index. Moving stretches recorded
    between the previous and next kept-with-motion frame.
 

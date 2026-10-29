@@ -29,14 +29,16 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("case", type=Path)
     p.add_argument("--queries", type=Path, default=_ROOT / "eval" / "queries_compilation.yaml")
+    p.add_argument("--shift", type=float, default=0.0,
+                   help="seconds to add to every query window (the footage was re-cut to another clock time)")
     args = p.parse_args(argv)
     qs = yaml.safe_load(args.queries.read_text(encoding="utf-8"))["queries"]
     store = CaseStore(args.case)
     s = Searcher(store, OnnxClip(_ROOT / "models" / "desktop"))
     ranks = []
     for q in qs:
-        a = datetime.fromisoformat(q["start"]).timestamp()
-        b = datetime.fromisoformat(q["end"]).timestamp()
+        a = datetime.fromisoformat(q["start"]).timestamp() + args.shift
+        b = datetime.fromisoformat(q["end"]).timestamp() + args.shift
         res = s.search(q["text"], limit=10)
         rank = next((i + 1 for i, m in enumerate(res) if m.start_ts <= b and m.end_ts >= a), None)
         ranks.append(rank)

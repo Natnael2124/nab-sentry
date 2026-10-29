@@ -15,7 +15,7 @@ from hypothesis import strategies as st
 from conftest import MODELS
 from nab_find.cliptime import from_name, start_time
 from nab_find.media import parse_probe, scaled_size, MediaError
-from nab_find.processor import box_iou, is_activity, merge, subtract, total
+from nab_find.processor import ActivityRule, box_iou, merge, object_cue, subtract, total
 from nab_find.progress import Progress
 
 from nab_sentry.ingest.detector import Detection
@@ -132,11 +132,23 @@ def det(cls, box, high=True):
 
 def test_activity_rules():
     car = (0, 0, 100, 50)
-    assert is_activity([], [], 0.05, 0.02, 0.7)  # motion
-    assert is_activity([det("person", (5, 5, 20, 40))], [], 0.0, 0.02, 0.7)  # a person, even still
-    assert not is_activity([det("car", car)], [car], 0.0, 0.02, 0.7)  # parked car
-    assert is_activity([det("car", (60, 0, 160, 50))], [car], 0.0, 0.02, 0.7)  # moved car
-    assert not is_activity([det("person", (5, 5, 20, 40), high=False)], [], 0.0, 0.02, 0.7)  # low score only
+    person = det("person", (5, 5, 20, 40))
+    r = ActivityRule(0.02, 0.7)
+    assert r([], 0.05)  # motion counts at once
+    r = ActivityRule(0.02, 0.7)
+    assert not r([person], 0.0) and r([person], 0.0)  # a still person: from the second frame
+    r = ActivityRule(0.02, 0.7)
+    assert not r([person], 0.0) and not r([], 0.0) and not r([person], 0.0)  # flicker never counts
+    r = ActivityRule(0.02, 0.7)
+    for _ in range(5):
+        assert not r([det("car", car)], 0.0)  # parked car
+    assert not r([det("car", (60, 0, 160, 50))], 0.0) and r([det("car", (60, 0, 160, 50))], 0.0)  # moved and stays
+    r = ActivityRule(0.02, 0.7)
+    r([det("car", car)], 0.0)
+    r([], 0.0)  # missed in one frame...
+    assert not r([det("car", car)], 0.0) and not r([det("car", car)], 0.0)  # ...is still the same parked car
+    assert not ActivityRule(0.02, 0.7)([det("person", (5, 5, 20, 40), high=False)] * 2, 0.0)
+    assert not object_cue([det("person", (5, 5, 20, 40), high=False)], [], 0.7)
     assert box_iou(car, car) == 1.0 and box_iou(car, (200, 200, 300, 300)) == 0.0
 
 

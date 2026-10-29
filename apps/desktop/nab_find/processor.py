@@ -109,20 +109,40 @@ def box_iou(a, b) -> float:
     return inter / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter)
 
 
-def is_activity(dets: list[Detection], last_vehicles: list[tuple], fraction: float, threshold: float,
-                moved_iou: float) -> bool:
-    """Motion, any person, or a vehicle that is new or moved since the last quick frame. A car parked
-    all day is not activity."""
-    if fraction >= threshold:
-        return True
+def object_cue(dets: list[Detection], recent_vehicles: list[tuple], moved_iou: float) -> bool:
+    """A person, or a vehicle not seen in that place in the recent quick frames (a car parked all day
+    is not activity; one that arrives or leaves is)."""
     for d in dets:
         if not d.high:
             continue
         if d.cls == "person":
             return True
-        if d.cls in VEHICLES and all(box_iou(d.box, v) < moved_iou for v in last_vehicles):
+        if d.cls in VEHICLES and all(box_iou(d.box, v) < moved_iou for v in recent_vehicles):
             return True
     return False
+
+
+class ActivityRule:
+    """Motion counts at once. Without motion, an object cue (:func:`object_cue`) must repeat in two
+    quick frames in a row: measured on a static, noisy street (task 2.8), one-frame detections (a
+    "person" in the noise, a parked car's box flickering) were 25 false triggers per 10 minutes; a
+    real person passing moves pixels, so they never depend on the second frame."""
+
+    def __init__(self, threshold: float, moved_iou: float, memory: int = 5) -> None:
+        self.threshold, self.moved_iou, self.memory = threshold, moved_iou, memory
+        self._vehicles: list[list[tuple]] = []
+        self._cue_before = False
+
+    def __call__(self, dets: list[Detection], fraction: float) -> bool:
+        # vehicles of the frames before the previous one: a car that moved is "new" in both of the two
+        # frames that confirm it (with only one frame of history, that one is used)
+        older = self._vehicles[:-1] if len(self._vehicles) > 1 else self._vehicles
+        recent = [b for frame in older for b in frame]
+        cue = object_cue(dets, recent, self.moved_iou)
+        active = fraction >= self.threshold or (cue and self._cue_before)
+        self._cue_before = cue
+        self._vehicles = (self._vehicles + [[d.box for d in dets if d.high and d.cls in VEHICLES]])[-(self.memory + 1):]
+        return active
 
 
 def prefetch(it: Iterator, n: int = 6) -> Iterator:
@@ -349,19 +369,26 @@ class Processor:
         prev_small = None
         prev_t = a
         last_kept = -math.inf
-        last_vehicles: list[tuple] = []
+        rule = ActivityRule(t.motion_threshold, t.moved_iou)
         chunk = Chunk(v.video_id, "quick", (a, a))
         kept: list[tuple[float, np.ndarray]] = []
         wall0 = time.perf_counter()
         act_start: float | None = None
         for off, img in prefetch(reader.frames()):
             self._checkpoint()
+            # a chunk covers [start, off): the frame at ``off`` belongs to the next one, so a resume
+            # that starts at the committed end never processes it twice
+            if off - chunk.span[0] >= t.chunk_s:
+                if act_start is not None:
+                    chunk.motion.append((act_start, off))
+                    act_start = off
+                wall0 = self._commit_quick(v, chunk, kept, off, wall0)
+                chunk, kept = Chunk(v.video_id, "quick", (off, off)), []
             small = downscale_gray(img, t.gate_width)
             frac = 0.0 if prev_small is None else changed_fraction(prev_small, small, t.pixel_delta)
             prev_small = small
             dets = self.models.yolo.detect(img)
-            active = is_activity(dets, last_vehicles, frac, t.motion_threshold, t.moved_iou)
-            last_vehicles = [d.box for d in dets if d.high and d.cls in VEHICLES]
+            active = rule(dets, frac)
             if active:
                 if act_start is None:
                     act_start = prev_t
@@ -372,12 +399,6 @@ class Processor:
                 kept.append((off, img.copy()))
                 last_kept = off
             prev_t = off
-            if off - chunk.span[0] >= t.chunk_s:
-                if act_start is not None:
-                    chunk.motion.append((act_start, off))
-                    act_start = off
-                wall0 = self._commit_quick(v, chunk, kept, off, wall0)
-                chunk, kept = Chunk(v.video_id, "quick", (off, off)), []
         if act_start is not None:
             chunk.motion.append((act_start, b))
         self._commit_quick(v, chunk, kept, b, wall0)
@@ -426,6 +447,10 @@ class Processor:
         last_t = a
         for off, img in prefetch(reader.frames()):
             self._checkpoint()
+            if off - chunk_start >= t.chunk_s:  # [chunk_start, off), as in the quick pass
+                self._commit_detail(v, visits, pending_crops, chunk_start, off, wall0, final=False)
+                pending_crops = []
+                chunk_start, wall0 = off, time.perf_counter()
             h, w = img.shape[:2]
             dets = self.models.yolo.detect(img)
             assigns = tracker.step(off, dets)
@@ -455,10 +480,6 @@ class Processor:
                 if rec.ended and rec.key in cand:
                     self._flush_cand(rec.key, cand.pop(rec.key), {rec.key}, keys, pending_crops)
             last_t = off
-            if off - chunk_start >= t.chunk_s:
-                self._commit_detail(v, visits, pending_crops, chunk_start, off, wall0, final=False)
-                pending_crops = []
-                chunk_start, wall0 = off, time.perf_counter()
         tracker.end_all()
         for rec in tracker.drain():
             vk = keys.setdefault(rec.key, self._key())

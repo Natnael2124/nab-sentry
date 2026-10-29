@@ -125,11 +125,53 @@ def serve(state, web_dir: Path, port: int):
     return server
 
 
+def selftest(video: Path, data_dir: Path, model_dir: Path) -> int:
+    """Everything except the window: models, FFmpeg, both passes, search. For support and for checking
+    a build. Writes ``logs/selftest.json``; exit code 0 when it worked."""
+    import shutil
+
+    from nab_find.library import add_videos
+    from nab_find.models import load_models
+    from nab_find.processor import Processor
+    from nab_find.search import Searcher
+    from nab_find.store import CaseStore
+
+    out: dict = {"video": str(video), "ok": False}
+    t0 = time.perf_counter()
+    store = None
+    try:
+        models = load_models(model_dir, data_dir / "ovcache")
+        out["device"], out["model_load_s"] = models.device, round(time.perf_counter() - t0, 1)
+        store = CaseStore.create(data_dir / "selftest", "self-test")
+        added = add_videos(store, [video])
+        out["added"] = [a.__dict__ for a in added]
+        t1 = time.perf_counter()
+        out["result"] = Processor(store, models).run()
+        out["process_s"] = round(time.perf_counter() - t1, 1)
+        out["footage_s"] = round(sum(v.duration_s for v in store.videos()), 1)
+        out["counts"] = store.counts()
+        res = Searcher(store, models.clip).search("a person walking", limit=5)
+        out["search_top"] = [{"time": round(m.offset_s, 1), "score": round(m.score, 3)} for m in res]
+        out["ok"] = out["result"] == "done" and bool(res)
+    except Exception as exc:  # noqa: BLE001 - reported in the file
+        logging.getLogger("nab_find.app").exception("self-test failed")
+        out["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        if store is not None:
+            store.close()
+            shutil.rmtree(store.folder, ignore_errors=True)
+    (data_dir / "logs").mkdir(parents=True, exist_ok=True)
+    (data_dir / "logs" / "selftest.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
+    return 0 if out["ok"] else 1
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="NAB Find")
     p.add_argument("--dev", action="store_true", help="use the repository's data/desktop and models/desktop")
     p.add_argument("--data", type=Path)
     p.add_argument("--debug", action="store_true", help="enable the web inspector")
+    p.add_argument("--selftest", type=Path, metavar="VIDEO",
+                   help="process VIDEO in a throw-away case, search it, write logs/selftest.json, exit (no window)")
     args = p.parse_args(argv)
     if str(Path(__file__).resolve().parents[1]) not in sys.path:
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -143,6 +185,9 @@ def main(argv=None) -> int:
     if args.data:
         data_dir = args.data
     data_dir.mkdir(parents=True, exist_ok=True)
+    if args.selftest:
+        setup_logging(data_dir)
+        return selftest(args.selftest, data_dir, model_dir)
     if not single_instance():
         return 0
     setup_logging(data_dir)
