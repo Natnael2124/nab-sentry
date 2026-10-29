@@ -1,0 +1,21 @@
+# NAB Find (desktop) runtime + test pins, Python 3.12 x64. Separate from the V2 requirements.txt.
+#   py -3.12 -m venv venv-desktop
+#   venv-desktop\Scripts\python.exe -m pip install -r apps\desktop\requirements.txt
+# Model export (tools/export_clip.py) runs in the V2 development venv, which has torch/open_clip.
+faiss-cpu==1.15.1
+fastapi==0.142.2
+ftfy==6.3.1
+httpx==0.28.1
+hypothesis==6.168.3
+imageio-ffmpeg==0.6.0
+numpy==2.5.2
+onnxruntime==1.30.0
+opencv-python==5.0.0.93
+openvino==2026.4.1
+pillow==12.3.0
+psutil==7.2.2
+pytest==9.1.1
+pywebview==6.2.1
+PyYAML==6.0.3
+regex==2026.9.29
+uvicorn==0.54.0
