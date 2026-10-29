@@ -42,7 +42,7 @@ def _valid(m: re.Match) -> datetime | None:
 
 
 def clean_camera(text: str) -> str:
-    text = re.sub(r"[_\-.\s]+", " ", text).strip()
+    text = re.sub(r"[_.\s]+", " ", text).strip(" -")
     return text[:40]
 
 

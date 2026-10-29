@@ -237,3 +237,15 @@ def cut_clip(src: Path | str, start_s: float, dur_s: float, dst: Path | str, ove
 
 def info_json(info: VideoInfo) -> str:
     return json.dumps(info.__dict__)
+
+
+def grab_jpeg(src: Path | str, offset_s: float, max_side: int = 384, quality: int = 4) -> bytes:
+    """One frame at ``offset_s`` as JPEG bytes, longest side at most ``max_side`` (MJPEG q 2-31)."""
+    vf = f"scale='if(gt(iw,ih),min({max_side},iw),-2)':'if(gt(iw,ih),-2,min({max_side},ih))'"
+    argv = [ffmpeg_exe(), "-hide_banner", "-v", "error", "-nostdin", "-ss", f"{max(0.0, offset_s):.3f}",
+            "-i", str(src), "-frames:v", "1", "-map", "0:v:0", "-an", "-vf", vf, "-q:v", str(quality),
+            "-f", "image2pipe", "-vcodec", "mjpeg", "-"]
+    r = _run(argv, timeout=60)
+    if r.returncode != 0 or not r.stdout:
+        raise MediaError("could not read a frame: " + r.stderr.decode(errors="replace").strip()[-200:])
+    return r.stdout
