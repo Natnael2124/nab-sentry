@@ -35,8 +35,9 @@
 ## Phase 5: Package and verify
 - [x] 5.1 OpenVINO IR (fp16 weights) conversion of the models for the build.
 - [x] 5.2 PyInstaller build; run the built app on the test video.
-- [ ] 5.3 Inno Setup installer script written (`packaging/nab_find.iss`); building it needs Inno Setup,
-      whose download failed during an internet outage.
+- [x] 5.3 Inno Setup installer (`packaging/nab_find.iss`, Inno Setup 6.7.3): 367 MB; silent install, the
+      installed app's self-test on the 1-hour video, and silent uninstall verified (dialogs made suppressible
+      so a silent uninstall never waits for a click).
 - [x] 5.4 Slow suite `tests/test_slow.py` (`-m slow`): FFmpeg reader modes, clip cut, frame grab; real-model
       processing of a range with a stop + resume (found and fixed a duplicate frame at chunk ends), search, find again.
 - [x] 5.5 README section and user guide.

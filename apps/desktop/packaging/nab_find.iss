@@ -1,5 +1,5 @@
-; Inno Setup script for NAB Find (task 5.3). Build the PyInstaller folder first, then:
-;   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" apps\desktop\packaging\nab_find.iss
+; Inno Setup script for NAB Find (task 5.3). Build the PyInstaller folder first, then (per-user Inno Setup 6.7):
+;   "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" apps\desktop\packaging\nab_find.iss
 ; Output: apps\desktop\dist\NAB-Find-Setup-<version>.exe
 ; Installs per user (no admin prompt) into %LOCALAPPDATA%\Programs\NAB Find. Uninstalling keeps the
 ; user's searches in %LOCALAPPDATA%\NAB Find unless they tick the box to remove them.
@@ -21,9 +21,9 @@ OutputDir=..\dist
 OutputBaseFilename=NAB-Find-Setup-{#AppVersion}
 SetupIconFile=nab_find.ico
 UninstallDisplayIcon={app}\{#AppName}.exe
-Compression=lzma2/ultra64
+Compression=lzma2/max
 SolidCompression=yes
-LZMANumBlockThreads=4
+LZMANumBlockThreads=2
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -56,15 +56,16 @@ var code: Integer;
 begin
   Result := True;
   if not WebView2Installed() then
-    if MsgBox('NAB Find needs the Microsoft Edge WebView2 Runtime, which is missing on this PC.' + #13#10 +
-              'Open the download page now? (Install it, then run this setup again.)', mbConfirmation, MB_YESNO) = IDYES then
+    if SuppressibleMsgBox('NAB Find needs the Microsoft Edge WebView2 Runtime, which is missing on this PC.' + #13#10 +
+              'Open the download page now? (Install it, then run this setup again.)', mbConfirmation, MB_YESNO, IDNO) = IDYES then
       ShellExec('open', 'https://developer.microsoft.com/microsoft-edge/webview2/', '', '', SW_SHOWNORMAL, ewNoWait, code);
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then
-    if MsgBox('Also delete your saved searches (thumbnails and search data)?' + #13#10 +
-              'Your original video files are never touched.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+    // Silent uninstall (/SUPPRESSMSGBOXES) keeps the data; plain MsgBox would wait for a click even then.
+    if SuppressibleMsgBox('Also delete your saved searches (thumbnails and search data)?' + #13#10 +
+              'Your original video files are never touched.', mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
       DelTree(ExpandConstant('{localappdata}\NAB Find'), True, True, True);
 end;

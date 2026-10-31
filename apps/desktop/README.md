@@ -104,9 +104,14 @@ Build:
 venv-desktop\Scripts\pip install pyinstaller==6.22.3
 venv-desktop\Scripts\pyinstaller.exe apps\desktop\packaging\nab_find.spec --noconfirm --distpath apps\desktop\dist --workpath apps\desktop\build
 "apps\desktop\dist\NAB Find\NAB Find.exe" --data %TEMP%\nf --selftest data\videos\CAM-SEC01_20261007T230010.mp4   # writes logs\selftest.json
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" apps\desktop\packaging\nab_find.iss                                 # -> dist\NAB-Find-Setup-0.1.0.exe
+"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" apps\desktop\packaging\nab_find.iss                              # -> dist\NAB-Find-Setup-0.1.0.exe (~4 min)
 ```
-The one-folder build is 686 MB (models 299 MB, OpenCV 112 MB, OpenVINO 110 MB, FFmpeg 84 MB).
+The one-folder build is 686 MB (models 299 MB, OpenCV 112 MB, OpenVINO 110 MB, FFmpeg 84 MB). The
+installer is **367 MB** (the fp16 model weights barely compress; `lzma2/ultra64` ran out of memory in
+the compiler, `lzma2/max` is used). Verified 2026-10-31: silent per-user install in 130 s (689 MB on
+disk), the installed app's `--selftest` on the 1-hour video passed (GPU, 175 s on battery, about 20x),
+silent uninstall removed the files, shortcut and Add/Remove entry. Silent install/uninstall:
+`/VERYSILENT /SUPPRESSMSGBOXES [/DIR=...]`; a silent uninstall keeps the user's searches.
 
 The Gemini key: Settings in the app, or `GEMINI_API_KEY` / `NAB_FIND_GEMINI_KEY` in the environment.
 Never commit it; `data/` is gitignored. For a paid product the key must not ship inside the app (it
